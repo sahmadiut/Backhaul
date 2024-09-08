@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,28 +82,46 @@ func (s *TcpMuxTransport) Restart() {
 func (s *TcpMuxTransport) portConfigReader() {
 	// port mapping for listening on each local port
 	for _, portMapping := range s.config.Ports {
-		parts := strings.Split(portMapping, "=")
-		if len(parts) != 2 {
+		var re = regexp.MustCompile(`(?m)^(?:(?:\[(\d+):(\d+)\](?:=(\d+))?)|(?:(\d+)(?::(\d+))?(?:=(\d+))?))$`)
+		if !re.MatchString(portMapping) {
 			s.logger.Fatalf("invalid port mapping: %s", portMapping)
 			continue
 		}
-
-		localPortStr := strings.TrimSpace(parts[0])
-		localPort, err := strconv.Atoi(localPortStr)
-		if err != nil {
-			s.logger.Fatalf("invalid local port in mapping: %s", localPortStr)
-			continue
+		var groups = re.FindStringSubmatch(portMapping)
+		var validGroups []int
+		for i := 1; i < len(groups); i++ {
+			if groups[i] != "" {
+				var num, _ = strconv.Atoi(groups[i])
+				validGroups = append(validGroups, num)
+			}
 		}
-
-		remotePortStr := strings.TrimSpace(parts[1])
-		remotePort, err := strconv.Atoi(remotePortStr)
-		if err != nil {
-			s.logger.Fatalf("invalid remote port in mapping: %s", remotePortStr)
-			continue
+		var remotePort = -1
+		var startRange = validGroups[0]
+		var endRange = startRange
+		if strings.Contains(portMapping, "=") {
+			remotePort = validGroups[len(validGroups)-1]
+			if len(validGroups) == 3 {
+				endRange = validGroups[1]
+			}
+		} else {
+			if len(validGroups) == 2 {
+				endRange = validGroups[1]
+			}
 		}
-		go s.localListener(localPort, remotePort)
+		if startRange > endRange {
+			s.logger.Fatalf("Invalid range: %d %d", startRange, endRange)
+		} else {
+			for i := startRange; i <= endRange; i++ {
+				if remotePort == -1 {
+					go s.localListener(i, i)
+				} else {
+					go s.localListener(i, remotePort)
+				}
+			}
+		}
 	}
 }
+
 func (s *TcpMuxTransport) TunnelListener() {
 	tunnelListener, err := net.Listen("tcp", s.config.BindAddr)
 	if err != nil {
@@ -216,6 +235,7 @@ func (s *TcpMuxTransport) acceptStreamConn(listener net.Listener, id int, wg *sy
 }
 
 func (s *TcpMuxTransport) localListener(localPort int, remotePort int) {
+	s.logger.Debugf("starting listener on local port %d -> remote port %d", localPort, remotePort)
 	addr := fmt.Sprintf("0.0.0.0:%d", localPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
