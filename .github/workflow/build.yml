@@ -1,0 +1,45 @@
+name: Go Build and Package
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  tags:
+    - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: [1.21.4]  # Specify your Go version here
+        os: [ubuntu-latest]
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Build with Go
+        run: |
+          GOOS=linux GOARCH=${{ matrix.arch }} go build -o ./build/backhaul
+
+      - name: Package files
+        run: |
+          tar -czvf backhaul_${{ matrix.arch }}.tar.gz -C ./build backhaul
+          mkdir -p output
+          mv backhaul_${{ matrix.arch }}.tar.gz output/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: backhaul_${{ matrix.arch }}.tar.gz
+          path: output/backhaul_${{ matrix.arch }}.tar.gz
