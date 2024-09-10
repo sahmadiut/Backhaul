@@ -69,9 +69,13 @@ To start using the solution, you'll need to configure both server and client com
     nodelay = false            # Enable TCP_NODELAY (optional, default: false).
     channel_size = 2048        # Tunnel channel size. Excess connections are discarded. Only for tcp and ws mode (optional, default: 2048).
     connection_pool = 8        # Number of pre-established connections. Only for tcp and ws mode (optional, default: 8).
-    mux_session = 1            # Number of mux sessions for tcpmux. (optional, default: 1).
     log_level = "info"         # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
-
+    mux_session = 1             # Number of mux sessions for tcpmux. (optional, default: 1).
+    mux_version = 1             # The tcpmux protocol version. Acceptable values are 1 or 2. Version 2 may include additional features or optimizations. (optional)
+    mux_framesize = 32768       # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
+    mux_recievebuffer = 4194304 # 4 MB. The maximum buffer size for incoming data per connection. (optional)
+    mux_streambuffer = 65536    # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
+  
     ports = [ # Local to remote port mapping in this format LocalPort=RemotePort (mandatory).
         "4000=5201",
         "4003", # Local and remote port are the same.
@@ -99,7 +103,11 @@ To start using the solution, you'll need to configure both server and client com
    retry_interval = 1           # Retry interval in seconds (optional, default: 1).
    log_level = "info"           # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
    mux_session = 1              # Number of mux sessions for tcpmux. (optional, default: 1).
-
+   mux_version = 1              # The tcpmux protocol version. Acceptable values are 1 or 2. Version 2 may include additional features or optimizations. (optional)
+   mux_framesize = 32768        # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
+   mux_recievebuffer = 4194304  # 4 MB. The maximum buffer size for incoming data per connection. (optional)
+   mux_streambuffer = 65536     # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
+  
    forwarder = [ # Forward incoming connection to another address. optional.
       "4000=IP:PORT",
       "4001=127.0.0.1:9090",
