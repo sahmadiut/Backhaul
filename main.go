@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/musix/backhaul/cmd"
+	"github.com/sahmadiut/backhaul/cmd"
 )
 
 // Define the version of the application

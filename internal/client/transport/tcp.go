@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/musix/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/utils"
 
 	"github.com/sirupsen/logrus"
 )

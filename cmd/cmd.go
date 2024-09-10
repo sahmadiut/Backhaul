@@ -7,10 +7,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/musix/backhaul/internal/client"
-	"github.com/musix/backhaul/internal/config"
-	"github.com/musix/backhaul/internal/server"
-	"github.com/musix/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/client"
+	"github.com/sahmadiut/backhaul/internal/config"
+	"github.com/sahmadiut/backhaul/internal/server"
+	"github.com/sahmadiut/backhaul/internal/utils"
 
 	"github.com/BurntSushi/toml"
 )
