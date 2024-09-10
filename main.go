@@ -10,7 +10,7 @@ import (
 )
 
 // Define the version of the application
-const version = "v0.1.2-s3"
+const version = "v0.1.2-s4"
 
 func main() {
 	configPath := flag.String("c", "", "path to the configuration file (TOML format)")
