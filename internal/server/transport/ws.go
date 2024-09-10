@@ -123,11 +123,11 @@ func (s *WsTransport) portConfigReader() {
 			s.logger.Fatalf("Invalid range: %d %d", startRange, endRange)
 		} else {
 			for i := startRange; i <= endRange; i++ {
+				var localAddr = ":" + strconv.Itoa(i)
 				if remotePort == -1 {
-					//convert i to string
-					go s.localListener(strconv.Itoa(i), i)
+					go s.localListener(localAddr, i)
 				} else {
-					go s.localListener(strconv.Itoa(i), remotePort)
+					go s.localListener(localAddr, remotePort)
 				}
 			}
 		}
