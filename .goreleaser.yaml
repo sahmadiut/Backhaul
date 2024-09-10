@@ -1,19 +1,23 @@
 # .goreleaser.yml
+version: 2  # Specify the config version
 
-project_name: backhaul 
+project_name: backhaul
 
 builds:
-  - env:
-      - CGO_ENABLED=0
+  - id: backhaul
+    main: ./main.go 
     goos:
       - linux
-      - windows
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
-    main: ./main.go
-    ldflags: "-s -w"
+    flags:
+      - -ldflags=-s -w 
+    env:
+      - CGO_ENABLED=0
+
 
 archives:
   - format: tar.gz
@@ -21,5 +25,11 @@ archives:
 
 release:
   github:
-    owner: musixal
+    owner: Musixal
     name: backhaul
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git

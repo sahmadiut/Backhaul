@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"net"
 	"regexp"
@@ -28,13 +27,17 @@ type TcpMuxTransport struct {
 }
 
 type TcpMuxConfig struct {
-	BindAddr    string
-	Nodelay     bool
-	KeepAlive   time.Duration
-	Token       string
-	MuxSession  int
-	ChannelSize int
-	Ports       []string
+	BindAddr         string
+	Nodelay          bool
+	KeepAlive        time.Duration
+	Token            string
+	MuxSession       int
+	ChannelSize      int
+	Ports            []string
+	MuxVersion       int
+	MaxFrameSize     int
+	MaxReceiveBuffer int
+	MaxStreamBuffer  int
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -113,9 +116,9 @@ func (s *TcpMuxTransport) portConfigReader() {
 		} else {
 			for i := startRange; i <= endRange; i++ {
 				if remotePort == -1 {
-					go s.localListener(i, i)
+					go s.localListener(strconv.Itoa(i), i)
 				} else {
-					go s.localListener(i, remotePort)
+					go s.localListener(strconv.Itoa(i), remotePort)
 				}
 			}
 		}
@@ -178,12 +181,12 @@ func (s *TcpMuxTransport) acceptStreamConn(listener net.Listener, id int, wg *sy
 
 			// config fot smux
 			config := smux.Config{
-				Version:           2,                // Smux protocol version
-				KeepAliveInterval: 10 * time.Second, // Shorter keep-alive interval to quickly detect dead peers
-				KeepAliveTimeout:  30 * time.Second, // Aggressive timeout to handle unresponsive connections
-				MaxFrameSize:      8 * 1024,         // Smaller frame size to reduce latency and avoid fragmentation
-				MaxReceiveBuffer:  4 * 1024 * 1024,  // 8MB buffer to balance memory usage and throughput
-				MaxStreamBuffer:   1 * 1024 * 1024,  // 2MB buffer per stream for better latency
+				Version:           s.config.MuxVersion, // Smux protocol version
+				KeepAliveInterval: 10 * time.Second,    // Shorter keep-alive interval to quickly detect dead peers
+				KeepAliveTimeout:  30 * time.Second,    // Aggressive timeout to handle unresponsive connections
+				MaxFrameSize:      s.config.MaxFrameSize,
+				MaxReceiveBuffer:  s.config.MaxReceiveBuffer,
+				MaxStreamBuffer:   s.config.MaxStreamBuffer,
 			}
 			// smux server
 			session, err := smux.Client(conn, &config)
@@ -234,12 +237,11 @@ func (s *TcpMuxTransport) acceptStreamConn(listener net.Listener, id int, wg *sy
 	}
 }
 
-func (s *TcpMuxTransport) localListener(localPort int, remotePort int) {
-	s.logger.Debugf("starting listener on local port %d -> remote port %d", localPort, remotePort)
-	addr := fmt.Sprintf("0.0.0.0:%d", localPort)
-	listener, err := net.Listen("tcp", addr)
+func (s *TcpMuxTransport) localListener(localAddr string, remotePort int) {
+	s.logger.Debugf("starting listener on local port %s -> remote port %d", localAddr, remotePort)
+	listener, err := net.Listen("tcp", localAddr)
 	if err != nil {
-		s.logger.Fatalf("failed to listen on %s: %v", addr, err)
+		s.logger.Fatalf("failed to listen on %s: %v", localAddr, err)
 		return
 	}
 

@@ -124,9 +124,10 @@ func (s *WsTransport) portConfigReader() {
 		} else {
 			for i := startRange; i <= endRange; i++ {
 				if remotePort == -1 {
-					go s.localListener(i, i)
+					//convert i to string
+					go s.localListener(strconv.Itoa(i), i)
 				} else {
-					go s.localListener(i, remotePort)
+					go s.localListener(strconv.Itoa(i), remotePort)
 				}
 			}
 		}
@@ -262,12 +263,11 @@ func (s *WsTransport) TunnelListener() {
 	}
 }
 
-func (s *WsTransport) localListener(localPort int, remotePort int) {
-	s.logger.Debugf("starting listener on local port %d -> remote port %d", localPort, remotePort)
-	addr := fmt.Sprintf(":%d", localPort)
-	portListener, err := net.Listen("tcp", addr)
+func (s *WsTransport) localListener(localAddr string, remotePort int) {
+	s.logger.Debugf("starting listener on local port %s -> remote port %d", localAddr, remotePort)
+	portListener, err := net.Listen("tcp", localAddr)
 	if err != nil {
-		s.logger.Fatalf("failed to listen on %s: %v", addr, err)
+		s.logger.Fatalf("failed to listen on %s: %v", localAddr, err)
 		return
 	}
 
