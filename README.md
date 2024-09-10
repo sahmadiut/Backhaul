@@ -74,7 +74,6 @@ To start using the solution, you'll need to configure both server and client com
 
     ports = [ # Local to remote port mapping in this format LocalPort=RemotePort (mandatory).
         "4000=5201",
-        "127.0.0.1:4001=5201", # Bind to specific local address.
         "4003", # Local and remote port are the same.
         "[4004:4006]", # port range. it's equal to "4004=4004", "4005=4005", "4006=4006"
         "[4007:4009]=5201", # port range. it's equal to "4007=5201", "4008=5201", "4009=5201"
@@ -100,10 +99,6 @@ To start using the solution, you'll need to configure both server and client com
    retry_interval = 1           # Retry interval in seconds (optional, default: 1).
    log_level = "info"           # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
    mux_session = 1              # Number of mux sessions for tcpmux. (optional, default: 1).
-   mux_version = 1              # The tcpmux protocol version. Acceptable values are 1 or 2. Version 2 may include additional features or optimizations. (optional)
-   mux_framesize = 32768        # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
-   mux_recievebuffer = 4194304  # 4 MB. The maximum buffer size for incoming data per connection. (optional)
-   mux_streambuffer = 65536     # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
 
    forwarder = [ # Forward incoming connection to another address. optional.
       "4000=IP:PORT",
