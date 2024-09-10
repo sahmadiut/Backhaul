@@ -27,25 +27,6 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build with Go (Linux Only)
-        run: |
-          GOOS=linux GOARCH=amd64 go build -o ./build/backhaul_amd64
-          GOOS=linux GOARCH=arm64 go build -o ./build/backhaul_arm64
-
-      - name: Package files (Linux Only)
-        run: |
-          tar -czvf backhaul_amd64.tar.gz -C ./build backhaul_amd64
-          tar -czvf backhaul_arm64.tar.gz -C ./build backhaul_arm64
-          mkdir -p output
-          mv backhaul_amd64.tar.gz output/
-          mv backhaul_arm64.tar.gz output/
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: backhaul_linux_artifacts
-          path: output/
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
