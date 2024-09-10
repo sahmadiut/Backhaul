@@ -31,3 +31,4 @@ MakeFile
 .DS_Store
 .vscode
 dist/
+.idea
