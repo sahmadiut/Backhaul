@@ -1,40 +1,56 @@
-name: Go Build and Package
+name: Go Build and Release
 
 on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  goreleaser:
+    name: Release Project
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        arch: [amd64, arm64]
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
 
-      - name: Check out code
-        uses: actions/checkout@v3
-
-      - name: Build with Go
+      - name: Build with Go (Linux Only)
         run: |
-          GOOS=linux GOARCH=${{ matrix.arch }} go build -o ./build/backhaul
+          GOOS=linux GOARCH=amd64 go build -o ./build/backhaul_amd64
+          GOOS=linux GOARCH=arm64 go build -o ./build/backhaul_arm64
 
-      - name: Package files
+      - name: Package files (Linux Only)
         run: |
-          tar -czvf backhaul_${{ matrix.arch }}.tar.gz -C ./build backhaul
+          tar -czvf backhaul_amd64.tar.gz -C ./build backhaul_amd64
+          tar -czvf backhaul_arm64.tar.gz -C ./build backhaul_arm64
           mkdir -p output
-          mv backhaul_${{ matrix.arch }}.tar.gz output/
+          mv backhaul_amd64.tar.gz output/
+          mv backhaul_arm64.tar.gz output/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: backhaul_${{ matrix.arch }}.tar.gz
-          path: output/backhaul_${{ matrix.arch }}.tar.gz
+          name: backhaul_linux_artifacts
+          path: output/
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
