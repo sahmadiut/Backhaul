@@ -52,6 +52,9 @@ func (c *Client) Start() {
 			RetryInterval: time.Duration(c.config.RetryInterval) * time.Second,
 			Token:         c.config.Token,
 			Forwarder:     c.forwarderReader(c.config.Forwarder),
+			Sniffing:      c.config.Sniffer,
+			WebPort:       c.config.WebPort,
+			SnifferLog:    c.config.SnifferLog,
 		}
 		tcpClient := transport.NewTCPClient(c.ctx, tcpConfig, c.logger)
 		go tcpClient.ChannelDialer()
@@ -69,6 +72,9 @@ func (c *Client) Start() {
 			MaxReceiveBuffer: c.config.MaxReceiveBuffer,
 			MaxStreamBuffer:  c.config.MaxStreamBuffer,
 			Forwarder:        c.forwarderReader(c.config.Forwarder),
+			Sniffing:         c.config.Sniffer,
+			WebPort:          c.config.WebPort,
+			SnifferLog:       c.config.SnifferLog,
 		}
 		tcpMuxClient := transport.NewMuxClient(c.ctx, tcpMuxConfig, c.logger)
 		go tcpMuxClient.MuxDialer()
@@ -81,6 +87,9 @@ func (c *Client) Start() {
 			RetryInterval: time.Duration(c.config.RetryInterval) * time.Second,
 			Token:         c.config.Token,
 			Forwarder:     c.forwarderReader(c.config.Forwarder),
+			Sniffing:      c.config.Sniffer,
+			WebPort:       c.config.WebPort,
+			SnifferLog:    c.config.SnifferLog,
 		}
 		WsClient := transport.NewWSClient(c.ctx, WsConfig, c.logger)
 		go WsClient.ChannelDialer()

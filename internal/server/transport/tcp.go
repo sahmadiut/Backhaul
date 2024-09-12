@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"github.com/sahmadiut/backhaul/internal/utils"
 	"net"
 	"regexp"
@@ -26,6 +27,7 @@ type TcpTransport struct {
 	heartbeatDuration time.Duration
 	heartbeatSig      string
 	chanSignal        string
+	usageMonitor      *utils.Usage
 }
 
 type TcpConfig struct {
@@ -36,6 +38,9 @@ type TcpConfig struct {
 	Token          string
 	ChannelSize    int
 	Ports          []string
+	Sniffing       bool
+	WebPort        int
+	SnifferLog     string
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -51,10 +56,11 @@ func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.L
 		tunnelChannel:     make(chan net.Conn, config.ChannelSize),
 		getNewConnChan:    make(chan struct{}, config.ChannelSize),
 		controlChannel:    nil,              // will be set when a control connection is established
-		timeout:           2 * time.Second,  // Default timeout
+		timeout:           3 * time.Second,  // Default timeout
 		heartbeatDuration: 30 * time.Second, // Default heartbeat duration
 		heartbeatSig:      "0",              // Default heartbeat signal
 		chanSignal:        "1",              // Default channel signal
+		usageMonitor:      utils.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, logger),
 	}
 
 	return server
@@ -62,7 +68,7 @@ func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.L
 
 func (s *TcpTransport) Restart() {
 	if !s.restartMutex.TryLock() {
-		s.logger.Warn("server is already restarting")
+		s.logger.Warn("server restart already in progress, skipping restart attempt")
 		return
 	}
 	defer s.restartMutex.Unlock()
@@ -82,6 +88,7 @@ func (s *TcpTransport) Restart() {
 	s.tunnelChannel = make(chan net.Conn, s.config.ChannelSize)
 	s.getNewConnChan = make(chan struct{}, s.config.ChannelSize)
 	s.controlChannel = nil
+	s.usageMonitor = utils.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.logger)
 
 	go s.TunnelListener()
 
@@ -92,7 +99,7 @@ func (s *TcpTransport) portConfigReader() {
 	for _, portMapping := range s.config.Ports {
 		var re = regexp.MustCompile(`(?m)^(?:(?:\[(\d+):(\d+)\](?:=(\d+))?)|(?:(\d+)(?::(\d+))?(?:=(\d+))?))$`)
 		if !re.MatchString(portMapping) {
-			s.logger.Fatalf("invalid port mapping: %s", portMapping)
+			s.logger.Fatalf("invalid port mapping format: %s", portMapping)
 			continue
 		}
 		var groups = re.FindStringSubmatch(portMapping)
@@ -134,14 +141,14 @@ func (s *TcpTransport) portConfigReader() {
 func (s *TcpTransport) TunnelListener() {
 	listener, err := net.Listen("tcp", s.config.BindAddr)
 	if err != nil {
-		s.logger.Fatalf("failed to listen on %s: %v", s.config.BindAddr, err)
+		s.logger.Fatalf("failed to start listener on %s: %v", s.config.BindAddr, err)
 		return
 	}
 
 	// close the tun listener after context cancellation
 	defer listener.Close()
 
-	s.logger.Infof("server successfully started, listening on address: %s", listener.Addr().String())
+	s.logger.Infof("server started successfully, listening on address: %s", listener.Addr().String())
 
 	// try to establish a new channel
 	if s.controlChannel == nil {
@@ -154,7 +161,7 @@ func (s *TcpTransport) TunnelListener() {
 			case <-s.ctx.Done():
 				return
 			default:
-				s.logger.Debugf("waiting to accept incoming tunnel connection on %s", listener.Addr().String())
+				s.logger.Debugf("waiting for accept incoming tunnel connection on %s", listener.Addr().String())
 				conn, err := listener.Accept()
 				if err != nil {
 					s.logger.Debugf("failed to accept tunnel connection on %s: %v", listener.Addr().String(), err)
@@ -181,16 +188,23 @@ func (s *TcpTransport) TunnelListener() {
 					if err := tcpConn.SetNoDelay(s.config.Nodelay); err != nil {
 						s.logger.Warnf("failed to set TCP_NODELAY for %s: %v", tcpConn.RemoteAddr().String(), err)
 					} else {
-						s.logger.Tracef("TCP_NODELAY enabled successfully for %s", tcpConn.RemoteAddr().String())
+						s.logger.Tracef("TCP_NODELAY enabled for %s", tcpConn.RemoteAddr().String())
 					}
 				}
 
-				tcpConn.SetKeepAlive(true)
-				tcpConn.SetKeepAlivePeriod(s.config.KeepAlive)
+				// Set keep-alive settings
+				if err := tcpConn.SetKeepAlive(true); err != nil {
+					s.logger.Warnf("failed to enable TCP keep-alive for %s: %v", tcpConn.RemoteAddr().String(), err)
+				} else {
+					s.logger.Tracef("TCP keep-alive enabled for %s", tcpConn.RemoteAddr().String())
+				}
+				if err := tcpConn.SetKeepAlivePeriod(s.config.KeepAlive); err != nil {
+					s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
+				}
 
 				select {
 				case s.tunnelChannel <- conn:
-					s.logger.Debugf("accepted incoming tunnel TCP connection from %s", tcpConn.RemoteAddr().String())
+					s.logger.Debugf("accepted incoming TCP tunnel connection from %s", tcpConn.RemoteAddr().String())
 
 				case <-time.After(s.timeout): // Tunnel channel is full, discard the connection
 					s.logger.Warnf("tunnel channel is full, discarding TCP connection from %s", tcpConn.LocalAddr().String())
@@ -210,34 +224,39 @@ func (s *TcpTransport) channelListener() {
 			return
 
 		default:
-			s.logger.Warn("control channel in not found, trying to establish a new session")
+			s.logger.Info("control channel not found, attempting to establish a new session")
 			incomingConnection := <-s.tunnelChannel
 			msg, err := utils.ReceiveBinaryString(incomingConnection)
 			if err != nil {
-				s.logger.Error("error recieving channel signal")
+				s.logger.Errorf("Failed to receive channel signal: %v", err)
 				continue
 			}
 
 			if msg != s.config.Token {
-				s.logger.Error("invalid security token")
+				s.logger.Warnf("invalid security token received: %s", msg)
 				continue
 			}
 
 			err = utils.SendBinaryString(incomingConnection, s.config.Token)
 			if err != nil {
-				s.logger.Error("unable to send security token")
+				s.logger.Errorf("Failed to send security token: %v", err)
 				continue
 			}
 
 			s.controlChannel = incomingConnection
 
-			s.logger.Info("control channel established successfully")
+			s.logger.Info("control channel successfully established.")
 
 			// call the functions
 			go s.getNewConnection()
 			go s.heartbeat()
 			go s.poolChecker()
 			go s.portConfigReader()
+
+			if s.config.Sniffing {
+				go s.usageMonitor.Monitor()
+			}
+
 			return
 		}
 	}
@@ -253,16 +272,17 @@ func (s *TcpTransport) heartbeat() {
 			return
 		case <-ticker.C:
 			if s.controlChannel == nil {
+				s.logger.Warn("control channel is nil, attempting to restart server...")
 				go s.Restart()
 				return
 			}
 			err := utils.SendBinaryString(s.controlChannel, s.heartbeatSig)
 			if err != nil {
-				s.logger.Error("unable to send heartbeat. restarting server...")
+				s.logger.Error("failed to send heartbeat signal, attempting to restart server...")
 				go s.Restart()
 				return
 			}
-			s.logger.Debug("heartbeat sent successfully")
+			s.logger.Debug("heartbeat signal sent successfully")
 		}
 	}
 }
@@ -294,7 +314,7 @@ func (s *TcpTransport) getNewConnection() {
 		case <-s.getNewConnChan:
 			err := utils.SendBinaryString(s.controlChannel, s.chanSignal)
 			if err != nil {
-				s.logger.Error("error sending channel signal")
+				s.logger.Error("error sending channel signal, attempting to restart server...")
 				go s.Restart()
 				return
 			}
@@ -310,7 +330,7 @@ func (s *TcpTransport) localListener(localAddr string, remotePort int) {
 		return
 	}
 
-	//close the local listener after context cancellation
+	//close local listener after context cancellation
 	defer listener.Close()
 
 	s.logger.Infof("listener started successfully, listening on address: %s", listener.Addr().String())
@@ -326,7 +346,7 @@ func (s *TcpTransport) localListener(localAddr string, remotePort int) {
 				return
 
 			default:
-				s.logger.Debugf("waiting to accept incoming connection on %s", listener.Addr().String())
+				s.logger.Debugf("waiting for accept incoming connection on %s", listener.Addr().String())
 				conn, err := listener.Accept()
 				if err != nil {
 					s.logger.Debugf("failed to accept connection on %s: %v", listener.Addr().String(), err)
@@ -346,7 +366,7 @@ func (s *TcpTransport) localListener(localAddr string, remotePort int) {
 					if err := tcpConn.SetNoDelay(s.config.Nodelay); err != nil {
 						s.logger.Warnf("failed to set TCP_NODELAY for %s: %v", tcpConn.RemoteAddr().String(), err)
 					} else {
-						s.logger.Tracef("TCP_NODELAY enabled successfully for %s", tcpConn.RemoteAddr().String())
+						s.logger.Tracef("TCP_NODELAY enabled for %s", tcpConn.RemoteAddr().String())
 					}
 				}
 
@@ -386,18 +406,14 @@ func (s *TcpTransport) handleTCPSession(remotePort int, acceptChan chan net.Conn
 						continue innerloop
 					}
 					// Handle data exchange between connections
-					go utils.ConnectionHandler(incomingConn, tunnelConnection, s.logger)
+					go utils.ConnectionHandler(incomingConn, tunnelConnection, s.logger, s.usageMonitor, incomingConn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffing)
 					break innerloop
-
-				case <-time.After(s.timeout / 2):
-					s.logger.Warn("no available tunnel connection. requesting tunnel connection")
-					s.getNewConnChan <- struct{}{}
-					continue innerloop
 
 				case <-time.After(s.timeout):
-					s.logger.Warn("no available tunnel connection. discard the local connection")
+					s.logger.Warn("tunnel connection unavailable, attempting to restart server...")
 					incomingConn.Close()
-					break innerloop
+					go s.Restart()
+					return
 
 				case <-s.ctx.Done():
 					return
