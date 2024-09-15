@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/web"
 
 	"github.com/sirupsen/logrus"
 	"github.com/xtaci/smux"
@@ -25,7 +26,7 @@ type TcpMuxTransport struct {
 	smuxSession  []*smux.Session
 	restartMutex sync.Mutex
 	timeout      time.Duration
-	usageMonitor *utils.Usage
+	usageMonitor *web.Usage
 }
 
 type TcpMuxConfig struct {
@@ -40,9 +41,10 @@ type TcpMuxConfig struct {
 	MaxFrameSize     int
 	MaxReceiveBuffer int
 	MaxStreamBuffer  int
-	Sniffing         bool
+	Sniffer          bool
 	WebPort          int
 	SnifferLog       string
+	TunnelStatus     string
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -57,7 +59,7 @@ func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *lo
 		logger:       logger,
 		timeout:      2 * time.Second, // Default timeout
 		smuxSession:  make([]*smux.Session, config.MuxSession),
-		usageMonitor: utils.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, logger),
+		usageMonitor: web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
 	}
 
 	return server
@@ -83,7 +85,8 @@ func (s *TcpMuxTransport) Restart() {
 
 	// Re-initialize variables
 	s.smuxSession = make([]*smux.Session, s.config.MuxSession)
-	s.usageMonitor = utils.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.logger)
+	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
+	s.config.TunnelStatus = ""
 
 	go s.TunnelListener()
 
@@ -133,7 +136,12 @@ func (s *TcpMuxTransport) portConfigReader() {
 	}
 }
 
-func (s *TcpMuxTransport) TunnelListener() {
+func (s *TcpMuxTransport) TunnelListener() { // for  webui
+	if s.config.WebPort > 0 {
+		go s.usageMonitor.Monitor()
+	}
+	s.config.TunnelStatus = "Disconnected (TCPMux)"
+
 	tunnelListener, err := net.Listen("tcp", s.config.BindAddr)
 	if err != nil {
 		s.logger.Fatalf("failed to start listener on %s: %v", s.config.BindAddr, err)
@@ -152,11 +160,9 @@ func (s *TcpMuxTransport) TunnelListener() {
 	}
 	wg.Wait()
 
-	go s.portConfigReader()
+	s.config.TunnelStatus = "Connected (TCPMux)"
 
-	if s.config.Sniffing {
-		go s.usageMonitor.Monitor()
-	}
+	go s.portConfigReader()
 
 	<-s.ctx.Done()
 }
@@ -358,7 +364,7 @@ func (s *TcpMuxTransport) handleMUXSession(acceptChan chan net.Conn, remotePort 
 				continue
 			}
 
-			go utils.ConnectionHandler(stream, incomingConn, s.logger, s.usageMonitor, incomingConn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffing)
+			go utils.ConnectionHandler(stream, incomingConn, s.logger, s.usageMonitor, incomingConn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
 
 		case <-s.ctx.Done():
 			return

@@ -7,6 +7,7 @@ const (
 	TCP    TransportType = "tcp"
 	TCPMUX TransportType = "tcpmux"
 	WS     TransportType = "ws"
+	WSS    TransportType = "wss"
 )
 
 // ServerConfig represents the configuration for the server.
@@ -29,6 +30,9 @@ type ServerConfig struct {
 	Sniffer          bool          `toml:"sniffer"`
 	WebPort          int           `toml:"web_port"`
 	SnifferLog       string        `toml:"sniffer_log"`
+	TLSCertFile      string        `toml:"tls_cert"`
+	TLSKeyFile       string        `toml:"tls_key"`
+	Heartbeat        int           `toml:"heartbeat"`
 }
 
 // ClientConfig represents the configuration for the client.

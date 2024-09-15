@@ -20,14 +20,14 @@ const ( // Default values
 	defaultMaxFrameSize     = 32768   // 32KB
 	defaultMaxReceiveBuffer = 4194304 // 4MB
 	defaultMaxStreamBuffer  = 65536   // 256KB
-	defaultWebPort          = 2060
 	defaultSnifferLog       = "backhaul.json"
+	deafultHeartbeat        = 20 // 20 seconds
 )
 
 func applyDefaults(cfg *config.Config) {
 	// Transport
 	switch cfg.Server.Transport {
-	case config.TCP, config.TCPMUX, config.WS: // valid values
+	case config.TCP, config.TCPMUX, config.WS, config.WSS: // valid values
 	case "":
 		cfg.Server.Transport = defaultTransport
 	default:
@@ -36,7 +36,7 @@ func applyDefaults(cfg *config.Config) {
 	}
 
 	switch cfg.Client.Transport {
-	case config.TCP, config.TCPMUX, config.WS: //valid values
+	case config.TCP, config.TCPMUX, config.WS, config.WSS: //valid values
 	case "":
 		cfg.Client.Transport = defaultTransport
 	default:
@@ -124,19 +124,18 @@ func applyDefaults(cfg *config.Config) {
 	if cfg.Client.MaxStreamBuffer <= 0 {
 		cfg.Client.MaxStreamBuffer = defaultMaxStreamBuffer
 	}
-	// WebPort
-	if cfg.Server.WebPort < 22 {
-		cfg.Server.WebPort = defaultWebPort
-	}
-	if cfg.Client.WebPort < 22 {
-		cfg.Client.WebPort = defaultWebPort
-	}
-	// Snifferlog
+	// WebPort returns 0 if not exists
+
+	// SnifferLog
 	if cfg.Server.SnifferLog == "" {
 		cfg.Server.SnifferLog = defaultSnifferLog
 	}
 	if cfg.Client.SnifferLog == "" {
 		cfg.Client.SnifferLog = defaultSnifferLog
+	}
+	// Heartbeat
+	if cfg.Server.Heartbeat < 1 { // Minimum accepted interval is 1 second
+		cfg.Server.Heartbeat = deafultHeartbeat
 	}
 
 }

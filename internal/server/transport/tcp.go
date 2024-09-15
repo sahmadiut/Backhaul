@@ -3,13 +3,15 @@ package transport
 import (
 	"context"
 	"fmt"
-	"github.com/sahmadiut/backhaul/internal/utils"
 	"net"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sahmadiut/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/web"
 
 	"github.com/sirupsen/logrus"
 )
@@ -27,7 +29,7 @@ type TcpTransport struct {
 	heartbeatDuration time.Duration
 	heartbeatSig      string
 	chanSignal        string
-	usageMonitor      *utils.Usage
+	usageMonitor      *web.Usage
 }
 
 type TcpConfig struct {
@@ -38,9 +40,11 @@ type TcpConfig struct {
 	Token          string
 	ChannelSize    int
 	Ports          []string
-	Sniffing       bool
+	Sniffer        bool
 	WebPort        int
 	SnifferLog     string
+	Heartbeat      int // in seconds
+	TunnelStatus   string
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -55,12 +59,12 @@ func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.L
 		logger:            logger,
 		tunnelChannel:     make(chan net.Conn, config.ChannelSize),
 		getNewConnChan:    make(chan struct{}, config.ChannelSize),
-		controlChannel:    nil,              // will be set when a control connection is established
-		timeout:           3 * time.Second,  // Default timeout
-		heartbeatDuration: 30 * time.Second, // Default heartbeat duration
-		heartbeatSig:      "0",              // Default heartbeat signal
-		chanSignal:        "1",              // Default channel signal
-		usageMonitor:      utils.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, logger),
+		controlChannel:    nil,                                           // will be set when a control connection is established
+		timeout:           3 * time.Second,                               // Default timeout
+		heartbeatDuration: time.Duration(config.Heartbeat) * time.Second, // Heartbeat duration
+		heartbeatSig:      "0",                                           // Default heartbeat signal
+		chanSignal:        "1",                                           // Default channel signal
+		usageMonitor:      web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
 	}
 
 	return server
@@ -88,7 +92,8 @@ func (s *TcpTransport) Restart() {
 	s.tunnelChannel = make(chan net.Conn, s.config.ChannelSize)
 	s.getNewConnChan = make(chan struct{}, s.config.ChannelSize)
 	s.controlChannel = nil
-	s.usageMonitor = utils.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.logger)
+	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
+	s.config.TunnelStatus = ""
 
 	go s.TunnelListener()
 
@@ -139,6 +144,12 @@ func (s *TcpTransport) portConfigReader() {
 }
 
 func (s *TcpTransport) TunnelListener() {
+	// for  webui
+	if s.config.WebPort > 0 {
+		go s.usageMonitor.Monitor()
+	}
+	s.config.TunnelStatus = "Disconnected (TCP)"
+
 	listener, err := net.Listen("tcp", s.config.BindAddr)
 	if err != nil {
 		s.logger.Fatalf("failed to start listener on %s: %v", s.config.BindAddr, err)
@@ -206,7 +217,7 @@ func (s *TcpTransport) TunnelListener() {
 				case s.tunnelChannel <- conn:
 					s.logger.Debugf("accepted incoming TCP tunnel connection from %s", tcpConn.RemoteAddr().String())
 
-				case <-time.After(s.timeout): // Tunnel channel is full, discard the connection
+				default: // Tunnel channel is full, discard the connection
 					s.logger.Warnf("tunnel channel is full, discarding TCP connection from %s", tcpConn.LocalAddr().String())
 					conn.Close()
 				}
@@ -253,9 +264,7 @@ func (s *TcpTransport) channelListener() {
 			go s.poolChecker()
 			go s.portConfigReader()
 
-			if s.config.Sniffing {
-				go s.usageMonitor.Monitor()
-			}
+			s.config.TunnelStatus = "Connected (TCP)"
 
 			return
 		}
@@ -288,20 +297,31 @@ func (s *TcpTransport) heartbeat() {
 }
 
 func (s *TcpTransport) poolChecker() {
+	ticker := time.NewTicker(time.Millisecond * 500)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 
-		default:
-			if len(s.tunnelChannel) < s.config.ConnectionPool {
-				for i := 0; i < s.config.ConnectionPool-len(s.tunnelChannel); i++ {
-					s.getNewConnChan <- struct{}{}
+		case <-ticker.C:
+			currentPoolSize := len(s.tunnelChannel)
+			if currentPoolSize < s.config.ConnectionPool {
+				neededConnections := s.config.ConnectionPool - currentPoolSize
+				s.logger.Tracef("pool size is %d, adding %d new connections", currentPoolSize, neededConnections)
+
+			loop:
+				for i := 0; i < neededConnections; i++ {
+					select {
+					case s.getNewConnChan <- struct{}{}:
+					default:
+						s.logger.Trace("getNewConnChan is full, skipping new connection")
+						break loop
+					}
 				}
 			}
 		}
-		// Time interval to check pool status
-		time.Sleep(time.Millisecond * 200)
 	}
 }
 
@@ -373,14 +393,20 @@ func (s *TcpTransport) localListener(localAddr string, remotePort int) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
 
 				if len(s.tunnelChannel) < s.config.ConnectionPool {
-					s.getNewConnChan <- struct{}{}
+					select {
+					case s.getNewConnChan <- struct{}{}:
+						// Successfully requested a new connection
+					default:
+						// The channel is full, do nothing
+						s.logger.Warn("getNewConnChan is full, cannot request a new connection")
+					}
 				}
 
 				select {
 				case acceptChan <- tcpConn:
 					s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
 
-				case <-time.After(s.timeout): // channel is full, discard the connection
+				default: // channel is full, discard the connection
 					s.logger.Warnf("channel with listener %s is full, discarding TCP connection from %s", listener.Addr().String(), tcpConn.LocalAddr().String())
 					tcpConn.Close()
 				}
@@ -406,7 +432,7 @@ func (s *TcpTransport) handleTCPSession(remotePort int, acceptChan chan net.Conn
 						continue innerloop
 					}
 					// Handle data exchange between connections
-					go utils.ConnectionHandler(incomingConn, tunnelConnection, s.logger, s.usageMonitor, incomingConn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffing)
+					go utils.ConnectionHandler(incomingConn, tunnelConnection, s.logger, s.usageMonitor, incomingConn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
 					break innerloop
 
 				case <-time.After(s.timeout):

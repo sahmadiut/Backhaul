@@ -6,19 +6,20 @@ import (
 	"net"
 
 	"github.com/gorilla/websocket"
+	"github.com/sahmadiut/backhaul/internal/web"
 	"github.com/sirupsen/logrus"
 )
 
 // WebSocketToTCPConnectionHandler handles data transfer between a WebSocket and a TCP connection
-func WSToTCPConnHandler(wsConn *websocket.Conn, tcpConn net.Conn, logger *logrus.Logger, usage *Usage, remotePort int, sniffing bool) {
+func WSToTCPConnHandler(wsConn *websocket.Conn, tcpConn net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		transferWebSocketToTCP(wsConn, tcpConn, logger, usage, remotePort, sniffing)
+		transferWebSocketToTCP(wsConn, tcpConn, logger, usage, remotePort, sniffer)
 	}()
 
-	transferTCPToWebSocket(tcpConn, wsConn, logger, usage, remotePort, sniffing)
+	transferTCPToWebSocket(tcpConn, wsConn, logger, usage, remotePort, sniffer)
 
 	<-done
 
@@ -27,7 +28,7 @@ func WSToTCPConnHandler(wsConn *websocket.Conn, tcpConn net.Conn, logger *logrus
 }
 
 // transferWebSocketToTCP transfers data from a WebSocket connection to a TCP connection
-func transferWebSocketToTCP(wsConn *websocket.Conn, tcpConn net.Conn, logger *logrus.Logger, usage *Usage, remotePort int, sniffing bool) {
+func transferWebSocketToTCP(wsConn *websocket.Conn, tcpConn net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
 	for {
 		// Read message from the WebSocket connection
 		messageType, message, err := wsConn.ReadMessage()
@@ -53,7 +54,7 @@ func transferWebSocketToTCP(wsConn *websocket.Conn, tcpConn net.Conn, logger *lo
 				return
 			}
 			logger.Tracef("transferred data from WebSocket to TCP: %d bytes", w)
-			if sniffing {
+			if sniffer {
 				go usage.AddOrUpdatePort(remotePort, uint64(w))
 			}
 		}
@@ -61,7 +62,7 @@ func transferWebSocketToTCP(wsConn *websocket.Conn, tcpConn net.Conn, logger *lo
 }
 
 // transferTCPToWebSocket transfers data from a TCP connection to a WebSocket connection
-func transferTCPToWebSocket(tcpConn net.Conn, wsConn *websocket.Conn, logger *logrus.Logger, usage *Usage, remotePort int, sniffing bool) {
+func transferTCPToWebSocket(tcpConn net.Conn, wsConn *websocket.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
 	buf := make([]byte, 16*1024) // 16K buffer size
 	for {
 		// Read data from the TCP connection
@@ -91,7 +92,7 @@ func transferTCPToWebSocket(tcpConn net.Conn, wsConn *websocket.Conn, logger *lo
 		}
 
 		logger.Tracef("transferred data from TCP to WebSocket: %d bytes", n)
-		if sniffing {
+		if sniffer {
 			go usage.AddOrUpdatePort(remotePort, uint64(n))
 		}
 	}

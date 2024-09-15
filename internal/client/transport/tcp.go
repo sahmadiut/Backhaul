@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/web"
 
 	"github.com/sirupsen/logrus"
 )
@@ -22,7 +23,7 @@ type TcpTransport struct {
 	restartMutex   sync.Mutex
 	heartbeatSig   string
 	chanSignal     string
-	usageMonitor   *utils.Usage
+	usageMonitor   *web.Usage
 }
 type TcpConfig struct {
 	RemoteAddr    string
@@ -31,9 +32,10 @@ type TcpConfig struct {
 	RetryInterval time.Duration
 	Token         string
 	Forwarder     map[int]string
-	Sniffing      bool
+	Sniffer       bool
 	WebPort       int
 	SnifferLog    string
+	TunnelStatus  string
 }
 
 func NewTCPClient(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -50,7 +52,7 @@ func NewTCPClient(parentCtx context.Context, config *TcpConfig, logger *logrus.L
 		timeout:        5 * time.Second, // Default timeout
 		heartbeatSig:   "0",             // Default heartbeat signal
 		chanSignal:     "1",             // Default channel signal
-		usageMonitor:   utils.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, logger),
+		usageMonitor:   web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
 	}
 
 	return client
@@ -76,13 +78,21 @@ func (c *TcpTransport) Restart() {
 
 	// Re-initialize variables
 	c.controlChannel = nil
-	c.usageMonitor = utils.NewDataStore(fmt.Sprintf(":%v", c.config.WebPort), ctx, c.config.SnifferLog, c.logger)
+	c.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", c.config.WebPort), ctx, c.config.SnifferLog, c.config.Sniffer, &c.config.TunnelStatus, c.logger)
+	c.config.TunnelStatus = ""
 
 	go c.ChannelDialer()
 
 }
 
 func (c *TcpTransport) ChannelDialer() {
+	// for  webui
+	if c.config.WebPort > 0 {
+		go c.usageMonitor.Monitor()
+	}
+
+	c.config.TunnelStatus = "Disconnected (TCP)"
+
 	for c.controlChannel == nil {
 		select {
 		case <-c.ctx.Done():
@@ -125,13 +135,12 @@ func (c *TcpTransport) ChannelDialer() {
 			if message == c.config.Token {
 				c.controlChannel = tunnelTCPConn
 				c.logger.Info("control channel established successfully")
+
+				c.config.TunnelStatus = "Connected (TCP)"
+
 				// Resetting the deadline (removes any existing deadline)
 				tunnelTCPConn.SetReadDeadline(time.Time{})
 				go c.channelListener()
-
-				if c.config.Sniffing {
-					go c.usageMonitor.Monitor()
-				}
 
 				return
 			} else {
@@ -230,7 +239,7 @@ func (c *TcpTransport) localDialer(tunnelConnection net.Conn, port uint16) {
 			return
 		}
 		c.logger.Debugf("connected to local address %s successfully", localAddress)
-		go utils.ConnectionHandler(localConnection, tunnelConnection, c.logger, c.usageMonitor, int(port), c.config.Sniffing)
+		go utils.ConnectionHandler(localConnection, tunnelConnection, c.logger, c.usageMonitor, int(port), c.config.Sniffer)
 	}
 }
 

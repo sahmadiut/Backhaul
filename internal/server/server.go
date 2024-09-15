@@ -48,9 +48,10 @@ func (s *Server) Start() {
 			Token:          s.config.Token,
 			ChannelSize:    s.config.ChannelSize,
 			Ports:          s.config.Ports,
-			Sniffing:       s.config.Sniffer,
+			Sniffer:        s.config.Sniffer,
 			WebPort:        s.config.WebPort,
 			SnifferLog:     s.config.SnifferLog,
+			Heartbeat:      s.config.Heartbeat,
 		}
 
 		tcpServer := transport.NewTCPServer(s.ctx, tcpConfig, s.logger)
@@ -69,7 +70,7 @@ func (s *Server) Start() {
 			MaxFrameSize:     s.config.MaxFrameSize,
 			MaxReceiveBuffer: s.config.MaxReceiveBuffer,
 			MaxStreamBuffer:  s.config.MaxStreamBuffer,
-			Sniffing:         s.config.Sniffer,
+			Sniffer:          s.config.Sniffer,
 			WebPort:          s.config.WebPort,
 			SnifferLog:       s.config.SnifferLog,
 		}
@@ -77,7 +78,7 @@ func (s *Server) Start() {
 		tcpMuxServer := transport.NewTcpMuxServer(s.ctx, tcpMuxConfig, s.logger)
 		go tcpMuxServer.TunnelListener()
 
-	} else if s.config.Transport == config.WS {
+	} else if s.config.Transport == config.WS || s.config.Transport == config.WSS {
 		wsConfig := &transport.WsConfig{
 			BindAddr:       s.config.BindAddr,
 			Nodelay:        s.config.Nodelay,
@@ -86,9 +87,13 @@ func (s *Server) Start() {
 			Token:          s.config.Token,
 			ChannelSize:    s.config.ChannelSize,
 			Ports:          s.config.Ports,
-			Sniffing:       s.config.Sniffer,
+			Sniffer:        s.config.Sniffer,
 			WebPort:        s.config.WebPort,
 			SnifferLog:     s.config.SnifferLog,
+			Mode:           s.config.Transport,
+			TLSCertFile:    s.config.TLSCertFile,
+			TLSKeyFile:     s.config.TLSKeyFile,
+			Heartbeat:      s.config.Heartbeat,
 		}
 
 		wsServer := transport.NewWSServer(s.ctx, wsConfig, s.logger)

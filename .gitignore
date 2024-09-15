@@ -32,6 +32,8 @@ MakeFile
 .vscode
 dist/
 
-#
+# other
 *.json
 .idea
+server.*
+backhaul
