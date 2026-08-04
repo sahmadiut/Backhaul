@@ -115,7 +115,7 @@ func attemptDialWebSocket(ctx context.Context, addr string, edgeIP string, path 
 	}
 
 	switch mode {
-	case config.WS, config.WSMUX:
+	case config.WS, config.WSMUX, config.HTTPWS:
 		wsURL = fmt.Sprintf("ws://%s%s", addr, path)
 
 		dialer = websocket.Dialer{
@@ -129,7 +129,7 @@ func attemptDialWebSocket(ctx context.Context, addr string, edgeIP string, path 
 				return conn, nil
 			},
 		}
-	case config.WSS, config.WSSMUX:
+	case config.WSS, config.WSSMUX, config.HTTPSWS:
 		wsURL = fmt.Sprintf("wss://%s%s", addr, path)
 
 		// Create a TLS configuration that allows insecure connections

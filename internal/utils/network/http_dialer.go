@@ -90,7 +90,7 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 
 	dialAddr := addr
 	var serverName string
-	if edgeIP != "" || mode == config.HTTPS {
+	if edgeIP != "" || mode == config.HTTPS || mode == config.HTTPSWS {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid address format, failed to parse: %w", err)
@@ -119,7 +119,7 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 		}
 	}
 
-	if mode == config.HTTPS {
+	if mode == config.HTTPS || mode == config.HTTPSWS {
 		tlsConn := tls.Client(tcpConn, httpTLSConfig(serverName))
 		rawConn = tlsConn
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
