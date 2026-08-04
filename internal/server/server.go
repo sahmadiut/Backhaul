@@ -169,6 +169,26 @@ func (s *Server) Start() {
 		httpServer := transport.NewHTTPServer(s.ctx, httpConfig, s.logger)
 		go httpServer.Start()
 
+	case config.HTTPWS, config.HTTPSWS:
+		httpwsConfig := &transport.HttpWsConfig{
+			BindAddr:    s.config.BindAddr,
+			Nodelay:     s.config.Nodelay,
+			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
+			Token:       s.config.Token,
+			ChannelSize: s.config.ChannelSize,
+			Ports:       s.config.Ports,
+			Sniffer:     s.config.Sniffer,
+			WebPort:     s.config.WebPort,
+			SnifferLog:  s.config.SnifferLog,
+			Mode:        s.config.Transport,
+			TLSCertFile: s.config.TLSCertFile,
+			TLSKeyFile:  s.config.TLSKeyFile,
+		}
+
+		httpwsServer := transport.NewHTTPWSServer(s.ctx, httpwsConfig, s.logger)
+		go httpwsServer.Start()
+
 	default:
 		s.logger.Fatal("invalid transport type: ", s.config.Transport)
 	}

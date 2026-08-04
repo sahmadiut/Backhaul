@@ -18,7 +18,7 @@ var (
 	logger = utils.NewLogger("info")
 )
 
-func Run(configPath string, ctx context.Context) {
+func Run(configPath string, version string, ctx context.Context) {
 	// Load and parse the configuration file
 	cfg, err := loadConfig(configPath)
 	if err != nil {
@@ -38,7 +38,7 @@ func Run(configPath string, ctx context.Context) {
 	}
 
 	// Print startup separator and configuration summary
-	printStartupBanner(cfg, configType, configPath)
+	printStartupBanner(cfg, configType, configPath, version)
 
 	// Determine whether to run as a server or client
 	switch configType {
@@ -85,11 +85,11 @@ func loadConfig(configPath string) (*config.Config, error) {
 }
 
 // printStartupBanner prints a visual separator and configuration summary at startup.
-func printStartupBanner(cfg *config.Config, mode string, configPath string) {
+func printStartupBanner(cfg *config.Config, mode string, configPath string, version string) {
 	separator := strings.Repeat("─", 60)
 
 	fmt.Fprintf(logger.Out, "\n\033[36m%s\033[0m\n", separator)
-	fmt.Fprintf(logger.Out, "\033[1;36m  Backhaul Starting\033[0m\n")
+	fmt.Fprintf(logger.Out, "\033[1;36m  Backhaul Starting (%s)\033[0m\n", version)
 	fmt.Fprintf(logger.Out, "\033[36m%s\033[0m\n\n", separator)
 
 	switch mode {

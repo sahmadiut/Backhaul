@@ -22,7 +22,7 @@ var (
 )
 
 // Define the version of the application
-const version = "v1.0.3"
+const version = "v1.0.4"
 
 func main() {
 	configPath = flag.String("c", "", "path to the configuration file (TOML format)")
@@ -48,7 +48,7 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	go cmd.Run(*configPath, ctx)
+	go cmd.Run(*configPath, version, ctx)
 	go hotReload()
 
 	<-sigChan
@@ -90,7 +90,7 @@ func hotReload() {
 
 				// Create a new context for the new instance
 				newCtx, newCancel := context.WithCancel(context.Background())
-				go cmd.Run(*configPath, newCtx)
+				go cmd.Run(*configPath, version, newCtx)
 
 				// Update the last modification time and the context
 				lastModTime = modTime
