@@ -19,6 +19,8 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
+      - [HTTP Configuration](#http-configuration)
+      - [HTTPS Configuration](#https-configuration)
 5. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
 6. [Running backhaul as a service](#running-backhaul-as-a-service)
 7. [FAQ](#faq)
@@ -36,7 +38,7 @@ This project offers a robust reverse tunneling solution to overcome NAT and fire
 ## Features
 
 * **High Performance**: Optimized for handling massive concurrent connections efficiently.
-* **Protocol Flexibility**: Supports TCP, WebSocket (WS), and Secure WebSocket (WSS) transports.
+* **Protocol Flexibility**: Supports TCP, WebSocket (WS), Secure WebSocket (WSS), HTTP, and HTTPS transports.
 * **UDP over TCP**: Implements UDP traffic encapsulation and forwarding over a TCP connection for reliable delivery with built-in congestion control.
 * **Multiplexing**: Enables multiple connections over a single transport with SMUX.
 * **NAT & Firewall Bypass**: Overcomes restrictions with reverse tunneling.
@@ -84,7 +86,7 @@ To start using the solution, you'll need to configure both server and client com
     ```toml
     [server]# Local, IRAN
     bind_addr = "0.0.0.0:3080"    # Address and port for the server to listen on (mandatory).
-    transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
+    transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux", "http", "https". mandatory).
     accept_udp = false             # Enable transferring UDP connections over TCP transport. (optional, default: false)
     token = "your_token"          # Authentication token for secure communication (optional).
     keepalive_period = 75         # Interval in seconds to send keep-alive packets.(optional, default: 75s)
@@ -134,7 +136,7 @@ To start using the solution, you'll need to configure both server and client com
    [client]  # Behind NAT, firewall-blocked
    remote_addr = "0.0.0.0:3080"  # Server address and port (mandatory).
    edge_ip = "188.114.96.0"      # Edge IP used for CDN connection, specifically for WebSocket-based transports.(Optional, default none)
-   transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
+   transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux", "http", "https". mandatory).
    token = "your_token"          # Authentication token for secure communication (optional).
    connection_pool = 8           # Number of pre-established connections.(optional, default: 8).
    aggressive_pool = false       # Enables aggressive connection pool management.(optional, default: false).
@@ -483,6 +485,97 @@ To start using the solution, you'll need to configure both server and client com
    log_level = "info"
    ```
 
+#### HTTP Configuration
+* **Server**:
+
+   ```toml
+   [server]
+   bind_addr = "0.0.0.0:8080"
+   transport = "http"
+   token = "your_token" 
+   channel_size = 2048
+   keepalive_period = 75 
+   heartbeat = 40
+   nodelay = true 
+   sniffer = false 
+   web_port = 2060
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+   ports = []
+   ```
+
+* **Client**:
+
+   ```toml
+   [client]
+   remote_addr = "0.0.0.0:8080"
+   edge_ip = "" 
+   transport = "http"
+   token = "your_token" 
+   connection_pool = 8
+   aggressive_pool = false
+   keepalive_period = 75 
+   dial_timeout = 10
+   retry_interval = 3
+   nodelay = true 
+   sniffer = false 
+   web_port = 2060
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+   ```
+
+* **Details**:
+
+   The HTTP transport disguises tunnel traffic as regular HTTP requests, making it effective for bypassing firewalls and DPI that block WebSocket upgrades but allow normal HTTP traffic. After the initial HTTP handshake, the connection is hijacked for raw TCP tunneling, providing high performance with minimal overhead.
+
+   * Refer to TCP configuration for more information on shared options.
+
+#### HTTPS Configuration
+* **Server**:
+
+   ```toml
+   [server]
+   bind_addr = "0.0.0.0:8443"
+   transport = "https"
+   token = "your_token" 
+   channel_size = 2048
+   keepalive_period = 75 
+   nodelay = true 
+   tls_cert = "/root/server.crt"      
+   tls_key = "/root/server.key"
+   heartbeat = 40
+   sniffer = false 
+   web_port = 2060
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+   ports = []
+   ```
+
+* **Client**:
+
+   ```toml
+   [client]
+   remote_addr = "0.0.0.0:8443"
+   edge_ip = "" 
+   transport = "https"
+   token = "your_token" 
+   connection_pool = 8
+   aggressive_pool = false
+   keepalive_period = 75
+   dial_timeout = 10
+   retry_interval = 3  
+   nodelay = true 
+   sniffer = false 
+   web_port = 2060
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+   ```
+
+* **Details**:
+
+   HTTPS transport provides the same benefits as HTTP transport but with TLS encryption. Traffic appears as normal HTTPS browsing to firewalls and DPI systems.
+
+   * Refer to the next section for instructions on generating `tls_cert` and `tls_key`.
 
 
 ## Generating a Self-Signed TLS Certificate with OpenSSL
@@ -579,6 +672,8 @@ journalctl -u backhaul.service -e -f
 * `tcpmux`: Use if you need to handle multiple sessions over a single connection.
 * `ws`: Use if you need to traverse HTTP-based firewalls or proxies.
 * `wss`: Use this for secure WebSocket connections that need to traverse HTTP-based firewalls or proxies. It encrypts data for added security, similar to WS but with encryption.
+* `http`: Use if your firewall or DPI blocks WebSocket upgrades but allows regular HTTP traffic. The initial handshake looks like normal HTTP, then the connection is hijacked for high-performance raw tunneling.
+* `https`: Same as `http` but with TLS encryption. Traffic appears as regular HTTPS browsing. Use when you need both DPI evasion and encryption.
 
 
 ## Benchmark

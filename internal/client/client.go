@@ -148,6 +148,25 @@ func (c *Client) Start() {
 		udpClient := transport.NewUDPClient(c.ctx, udpConfig, c.logger)
 		go udpClient.Start()
 
+	case config.HTTP, config.HTTPS:
+		httpConfig := &transport.HttpConfig{
+			RemoteAddr:     c.config.RemoteAddr,
+			Nodelay:        c.config.Nodelay,
+			KeepAlive:      time.Duration(c.config.Keepalive) * time.Second,
+			RetryInterval:  time.Duration(c.config.RetryInterval) * time.Second,
+			DialTimeOut:    time.Duration(c.config.DialTimeout) * time.Second,
+			ConnPoolSize:   c.config.ConnectionPool,
+			Token:          c.config.Token,
+			Sniffer:        c.config.Sniffer,
+			WebPort:        c.config.WebPort,
+			SnifferLog:     c.config.SnifferLog,
+			Mode:           c.config.Transport,
+			AggressivePool: c.config.AggressivePool,
+			EdgeIP:         c.config.EdgeIP,
+		}
+		httpClient := transport.NewHTTPClient(c.ctx, httpConfig, c.logger)
+		go httpClient.Start()
+
 	default:
 		c.logger.Fatal("invalid transport type: ", c.config.Transport)
 	}

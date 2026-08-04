@@ -6,9 +6,9 @@ import (
 	_ "net/http/pprof"
 	"time"
 
-	"github.com/musix/backhaul/config"
-	"github.com/musix/backhaul/internal/server/transport"
-	"github.com/musix/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/config"
+	"github.com/sahmadiut/backhaul/internal/server/transport"
+	"github.com/sahmadiut/backhaul/internal/utils"
 
 	"github.com/sirupsen/logrus"
 )
@@ -148,6 +148,26 @@ func (s *Server) Start() {
 
 		udpServer := transport.NewUDPServer(s.ctx, udpConfig, s.logger)
 		go udpServer.Start()
+
+	case config.HTTP, config.HTTPS:
+		httpConfig := &transport.HttpConfig{
+			BindAddr:    s.config.BindAddr,
+			Nodelay:     s.config.Nodelay,
+			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
+			Token:       s.config.Token,
+			ChannelSize: s.config.ChannelSize,
+			Ports:       s.config.Ports,
+			Sniffer:     s.config.Sniffer,
+			WebPort:     s.config.WebPort,
+			SnifferLog:  s.config.SnifferLog,
+			Mode:        s.config.Transport,
+			TLSCertFile: s.config.TLSCertFile,
+			TLSKeyFile:  s.config.TLSKeyFile,
+		}
+
+		httpServer := transport.NewHTTPServer(s.ctx, httpConfig, s.logger)
+		go httpServer.Start()
 
 	default:
 		s.logger.Fatal("invalid transport type: ", s.config.Transport)
