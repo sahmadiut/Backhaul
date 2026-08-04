@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-func SendBinaryString(conn interface{}, message string) error {
+func SendBinaryString(conn net.Conn, message string) error {
 	// Header size
 	const headerSize = 2
 
@@ -20,37 +20,25 @@ func SendBinaryString(conn interface{}, message string) error {
 	// Copy the message into the buffer after the length
 	copy(buf[headerSize:], message)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		// Send the buffer over the connection
-		if _, err := c.Write(buf); err != nil {
-			return fmt.Errorf("failed to send message: %w", err)
-		}
-
-	default:
-		// Handle unsupported connection types
-		return fmt.Errorf("unsupported connection type: %T", conn)
+	// Send the buffer over the connection
+	if _, err := conn.Write(buf); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
 	}
+
 	// Successful
 	return nil
 }
 
-func ReceiveBinaryString(conn interface{}) (string, error) {
+func ReceiveBinaryString(conn net.Conn) (string, error) {
 	// Header size
 	const headerSize = 2
 
 	// Create a buffer to read the first 2 bytes (the length of the message)
 	lenBuf := make([]byte, headerSize)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		// Read exactly 2 bytes for the message length
-		if _, err := io.ReadFull(c, lenBuf); err != nil {
-			return "", fmt.Errorf("failed to read message length from net.Conn: %w", err)
-		}
-
-	default:
-		return "", fmt.Errorf("unsupported connection type: %T", conn)
+	// Read exactly 2 bytes for the message length
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
+		return "", fmt.Errorf("failed to read message length: %w", err)
 	}
 
 	// Decode the length of the message from the 2-byte buffer
@@ -59,21 +47,15 @@ func ReceiveBinaryString(conn interface{}) (string, error) {
 	// Create a buffer of the appropriate size to hold the message
 	messageBuf := make([]byte, messageLength)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		if _, err := io.ReadFull(c, messageBuf); err != nil {
-			return "", fmt.Errorf("failed to read message from net.Conn: %w", err)
-		}
-
-	default:
-		return "", fmt.Errorf("unsupported connection type: %T", conn)
+	if _, err := io.ReadFull(conn, messageBuf); err != nil {
+		return "", fmt.Errorf("failed to read message: %w", err)
 	}
 
 	// Convert the message buffer to a string and return it
 	return string(messageBuf), nil
 }
 
-func SendBinaryTransportString(conn interface{}, message string, transport byte) error {
+func SendBinaryTransportString(conn net.Conn, message string, transport byte) error {
 	// Header size
 	const headerSize = 3
 
@@ -83,43 +65,31 @@ func SendBinaryTransportString(conn interface{}, message string, transport byte)
 	// Encode the length of the message as a big-endian 2-byte unsigned integer
 	binary.BigEndian.PutUint16(buf[:headerSize], uint16(len(message)))
 
-	// encode the transport tyope
+	// encode the transport type
 	buf[2] = transport
 
 	// Copy the message into the buffer after the length
 	copy(buf[headerSize:], message)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		// Send the buffer over the connection
-		if _, err := c.Write(buf); err != nil {
-			return fmt.Errorf("failed to send message: %w", err)
-		}
-
-	default:
-		// Handle unsupported connection types
-		return fmt.Errorf("unsupported connection type: %T", conn)
+	// Send the buffer over the connection
+	if _, err := conn.Write(buf); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
 	}
+
 	// Successful
 	return nil
 }
 
-func ReceiveBinaryTransportString(conn interface{}) (string, byte, error) {
+func ReceiveBinaryTransportString(conn net.Conn) (string, byte, error) {
 	// Header size
 	const headerSize = 3
 
-	// Create a buffer to read the first 2 bytes (the length of the message)
+	// Create a buffer to read the first 3 bytes (2 for length + 1 for transport)
 	lenBuf := make([]byte, headerSize)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		// Read exactly 2 bytes for the message length
-		if _, err := io.ReadFull(c, lenBuf); err != nil {
-			return "", 0, fmt.Errorf("failed to read message length from net.Conn: %w", err)
-		}
-
-	default:
-		return "", 0, fmt.Errorf("unsupported connection type: %T", conn)
+	// Read exactly 3 bytes for the header
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
+		return "", 0, fmt.Errorf("failed to read message header: %w", err)
 	}
 
 	// Decode the length of the message from the 2-byte buffer
@@ -131,14 +101,8 @@ func ReceiveBinaryTransportString(conn interface{}) (string, byte, error) {
 	// Create a buffer of the appropriate size to hold the message
 	messageBuf := make([]byte, messageLength)
 
-	switch c := conn.(type) {
-	case net.Conn:
-		if _, err := io.ReadFull(c, messageBuf); err != nil {
-			return "", 0, fmt.Errorf("failed to read message from net.Conn: %w", err)
-		}
-
-	default:
-		return "", 0, fmt.Errorf("unsupported connection type: %T", conn)
+	if _, err := io.ReadFull(conn, messageBuf); err != nil {
+		return "", 0, fmt.Errorf("failed to read message: %w", err)
 	}
 
 	// Convert the message buffer to a string and return it
@@ -176,18 +140,12 @@ func ReceiveBinaryInt(conn net.Conn) (uint16, error) {
 	return port, nil
 }
 
-func SendBinaryByte(conn interface{}, message byte) error {
+func SendBinaryByte(conn net.Conn, message byte) error {
 	// Create a 1-byte buffer and send the message
 	messageBuf := [1]byte{message}
 
-	switch c := conn.(type) {
-	case net.Conn:
-		if _, err := c.Write(messageBuf[:]); err != nil {
-			return fmt.Errorf("failed to read message from net.Conn: %w", err)
-		}
-
-	default:
-		return fmt.Errorf("unsupported connection type: %T", conn)
+	if _, err := conn.Write(messageBuf[:]); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
 	}
 
 	// Successful
@@ -197,16 +155,9 @@ func SendBinaryByte(conn interface{}, message byte) error {
 func ReceiveBinaryByte(conn net.Conn) (byte, error) {
 	var messageBuf [1]byte
 
-	switch c := conn.(type) {
-	case net.Conn:
-		if _, err := io.ReadFull(c, messageBuf[:]); err != nil {
-			return 0, fmt.Errorf("failed to read message from net.Conn: %w", err)
-		}
-
-	default:
-		return 0, fmt.Errorf("unsupported connection type: %T", conn)
+	if _, err := io.ReadFull(conn, messageBuf[:]); err != nil {
+		return 0, fmt.Errorf("failed to read message: %w", err)
 	}
 
-	// Convert the message buffer to a string and return it
 	return messageBuf[0], nil
 }

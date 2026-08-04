@@ -21,6 +21,8 @@ go.work.sum
 # env file
 .env
 
+.gocache
+
 # toml file
 *.toml
 

@@ -13,6 +13,22 @@ import (
 	"github.com/sahmadiut/backhaul/config"
 )
 
+// userAgents is allocated once at package level to avoid per-dial allocation.
+var userAgents = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 11_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:114.0) Gecko/20100101 Firefox/114.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:102.0) Gecko/20100101 Firefox/102.0",
+	"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 11_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.64",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 OPR/97.0.4719.63",
+	"Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36",
+}
+
 // HttpDialer establishes an HTTP(S) connection to the given address and path,
 // performs a token-authenticated handshake, then hijacks the connection to
 // return the raw net.Conn for tunneling. The initial HTTP request looks like
@@ -46,23 +62,7 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 	// Generate a random X-user-id
 	randomUserID := rand.Int31()
 
-	// List of diverse User-Agent strings
-	userAgents := []string{
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 11_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36",
-		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:114.0) Gecko/20100101 Firefox/114.0",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:102.0) Gecko/20100101 Firefox/102.0",
-		"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 11_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15",
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.64",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 OPR/97.0.4719.63",
-		"Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36",
-	}
-
-	// Pick a random User-Agent
+	// Pick a random User-Agent from the package-level list
 	randomUserAgent := userAgents[rand.Intn(len(userAgents))]
 
 	// Handle edgeIP assignment
@@ -105,12 +105,6 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 
 	// Build the HTTP request manually to send over the raw connection
 	// This makes the initial traffic look like normal HTTP to DPI
-	scheme := "http"
-	if mode == config.HTTPS {
-		scheme = "https"
-	}
-	_ = scheme // used for documentation only
-
 	httpReq := fmt.Sprintf("GET %s HTTP/1.1\r\n"+
 		"Host: %s\r\n"+
 		"Authorization: Bearer %s\r\n"+
@@ -128,13 +122,14 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 	}
 
 	// Read the HTTP response (we expect "HTTP/1.1 101" for successful hijack)
-	buf := make([]byte, 4096)
+	// Use a stack-allocated buffer — the 101 response is typically ~60-80 bytes
+	var buf [512]byte
 	if err := rawConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		rawConn.Close()
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
 
-	n, err := rawConn.Read(buf)
+	n, err := rawConn.Read(buf[:])
 	if err != nil {
 		rawConn.Close()
 		return nil, fmt.Errorf("failed to read HTTP response: %w", err)

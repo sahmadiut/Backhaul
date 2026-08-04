@@ -5,10 +5,20 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/sahmadiut/backhaul/internal/web"
 	"github.com/sirupsen/logrus"
 )
+
+// bufferPool provides reusable 64KB buffers for data transfer,
+// reducing GC pressure under sustained load.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 64*1024) // 64K
+		return &buf
+	},
+}
 
 func TCPConnectionHandler(ctx context.Context, proxyProtocol bool, from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
 	done := make(chan struct{})
@@ -42,7 +52,10 @@ func TCPConnectionHandler(ctx context.Context, proxyProtocol bool, from net.Conn
 
 // Using direct Read and Write for transferring data
 func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
-	buf := make([]byte, 16*1024) // 16K
+	bufPtr := bufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer bufferPool.Put(bufPtr)
+
 	for {
 		// Read data from the source connection
 		r, err := from.Read(buf)

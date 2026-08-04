@@ -31,6 +31,7 @@ type HttpTransport struct {
 	controlChannel net.Conn
 	restartMutex   sync.Mutex
 	usageMonitor   *web.Usage
+	expectedAuth   string // pre-computed "Bearer <token>" to avoid fmt.Sprintf per request
 }
 
 type HttpConfig struct {
@@ -64,6 +65,7 @@ func NewHTTPServer(parentCtx context.Context, config *HttpConfig, logger *logrus
 		reqNewConnChan: make(chan struct{}, config.ChannelSize),
 		controlChannel: nil,
 		usageMonitor:   web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
+		expectedAuth:   fmt.Sprintf("Bearer %v", config.Token),
 	}
 
 	return server
@@ -198,14 +200,14 @@ func (s *HttpTransport) tunnelListener() {
 
 	// Create an HTTP server that hijacks connections
 	server := &http.Server{
-		Addr:        addr,
-		IdleTimeout: -1,
+		Addr:              addr,
+		IdleTimeout:       -1,
+		ReadHeaderTimeout: 10 * time.Second, // prevent slowloris attacks and resource leaks
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			s.logger.Tracef("received http request from %s", r.RemoteAddr)
 
-			// Validate the Authorization header
-			authHeader := r.Header.Get("Authorization")
-			if authHeader != fmt.Sprintf("Bearer %v", s.config.Token) {
+			// Validate the Authorization header using pre-computed expected value
+			if r.Header.Get("Authorization") != s.expectedAuth {
 				s.logger.Warnf("unauthorized request from %s, closing connection", r.RemoteAddr)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
@@ -499,19 +501,30 @@ func (s *HttpTransport) handleLoop() {
 		case <-s.ctx.Done():
 			return
 		case localConn := <-s.localChannel:
+			// Calculate remaining time before the 3s deadline
+			elapsed := time.Duration(time.Now().UnixMilli()-localConn.timeCreated) * time.Millisecond
+			remaining := 3*time.Second - elapsed
+			if remaining <= 0 {
+				s.logger.Debugf("timeouted local connection: %d ms", time.Now().UnixMilli()-localConn.timeCreated)
+				localConn.conn.Close()
+				continue
+			}
+
+			timer := time.NewTimer(remaining)
 		loop:
 			for {
-				if time.Now().UnixMilli()-localConn.timeCreated > 3000 { // 3000ms
+				select {
+				case <-s.ctx.Done():
+					timer.Stop()
+					return
+
+				case <-timer.C:
 					s.logger.Debugf("timeouted local connection: %d ms", time.Now().UnixMilli()-localConn.timeCreated)
 					localConn.conn.Close()
 					break loop
-				}
-
-				select {
-				case <-s.ctx.Done():
-					return
 
 				case tunnelConn := <-s.tunnelChannel:
+					timer.Stop()
 					// Send the target addr over the connection using the binary protocol
 					if err := utils.SendBinaryTransportString(tunnelConn, localConn.remoteAddr, utils.SG_TCP); err != nil {
 						s.logger.Errorf("%v", err)
