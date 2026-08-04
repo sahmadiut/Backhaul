@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 
 	"github.com/sahmadiut/backhaul/internal/web"
@@ -16,6 +18,15 @@ import (
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		buf := make([]byte, 64*1024) // 64K
+		return &buf
+	},
+}
+
+// A TLS Read returns at most one 16KB plaintext record. Using a larger buffer
+// in that direction only increases per-connection memory retention.
+var tlsReadBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 16*1024)
 		return &buf
 	},
 }
@@ -52,9 +63,28 @@ func TCPConnectionHandler(ctx context.Context, proxyProtocol bool, from net.Conn
 
 // Using direct Read and Write for transferring data
 func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
-	bufPtr := bufferPool.Get().(*[]byte)
+	// On Linux, io.Copy between TCP sockets reaches net.TCPConn.ReadFrom and
+	// uses splice(2), avoiding user-space copies and reusable buffer memory.
+	if !sniffer && runtime.GOOS == "linux" {
+		if isTCPConn(from) && isTCPConn(to) {
+			written, err := io.Copy(to, from)
+			if err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Trace("unable to splice connection data: ", err)
+			}
+			logger.Tracef("spliced data: %d bytes", written)
+			from.Close()
+			to.Close()
+			return
+		}
+	}
+
+	pool := &bufferPool
+	if _, ok := from.(*tls.Conn); ok {
+		pool = &tlsReadBufferPool
+	}
+	bufPtr := pool.Get().(*[]byte)
 	buf := *bufPtr
-	defer bufferPool.Put(bufPtr)
+	defer pool.Put(bufPtr)
 
 	for {
 		// Read data from the source connection
@@ -94,4 +124,21 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 		}
 	}
 
+}
+
+type connectionUnwrapper interface {
+	Unwrap() net.Conn
+}
+
+func isTCPConn(conn net.Conn) bool {
+	for {
+		if _, ok := conn.(*net.TCPConn); ok {
+			return true
+		}
+		unwrapper, ok := conn.(connectionUnwrapper)
+		if !ok {
+			return false
+		}
+		conn = unwrapper.Unwrap()
+	}
 }

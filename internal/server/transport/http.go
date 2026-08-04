@@ -65,7 +65,7 @@ func NewHTTPServer(parentCtx context.Context, config *HttpConfig, logger *logrus
 		reqNewConnChan: make(chan struct{}, config.ChannelSize),
 		controlChannel: nil,
 		usageMonitor:   web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
-		expectedAuth:   fmt.Sprintf("Bearer %v", config.Token),
+		expectedAuth:   "Bearer " + config.Token,
 	}
 
 	return server
@@ -213,10 +213,16 @@ func (s *HttpTransport) tunnelListener() {
 				return
 			}
 
-			// Check for the Upgrade: backhaul header
-			if strings.ToLower(r.Header.Get("Upgrade")) != "backhaul" {
+			// Check for the Upgrade: backhaul header without allocating a lowercase copy.
+			if !strings.EqualFold(r.Header.Get("Upgrade"), "backhaul") {
 				s.logger.Warnf("missing or invalid Upgrade header from %s", r.RemoteAddr)
 				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+
+			isTunnel := r.URL.Path == "/tunnel" || strings.HasPrefix(r.URL.Path, "/tunnel/")
+			if r.URL.Path != "/channel" && !isTunnel {
+				http.NotFound(w, r)
 				return
 			}
 
@@ -235,7 +241,7 @@ func (s *HttpTransport) tunnelListener() {
 			}
 
 			// Send 101 Switching Protocols response
-			response := "HTTP/1.1 101 Switching Protocols\r\n" +
+			const response = "HTTP/1.1 101 Switching Protocols\r\n" +
 				"Upgrade: backhaul\r\n" +
 				"Connection: Upgrade\r\n" +
 				"\r\n"
@@ -278,7 +284,7 @@ func (s *HttpTransport) tunnelListener() {
 
 				s.config.TunnelStatus = fmt.Sprintf("Connected (%s)", s.config.Mode)
 
-			} else if strings.HasPrefix(r.URL.Path, "/tunnel") {
+			} else if isTunnel {
 				select {
 				case s.tunnelChannel <- conn:
 					s.logger.Debugf("http tunnel connection accepted from %s", conn.RemoteAddr().String())
@@ -501,13 +507,22 @@ func (s *HttpTransport) handleLoop() {
 		case <-s.ctx.Done():
 			return
 		case localConn := <-s.localChannel:
-			// Calculate remaining time before the 3s deadline
-			elapsed := time.Duration(time.Now().UnixMilli()-localConn.timeCreated) * time.Millisecond
+			now := time.Now().UnixMilli()
+			elapsed := time.Duration(now-localConn.timeCreated) * time.Millisecond
 			remaining := 3*time.Second - elapsed
 			if remaining <= 0 {
-				s.logger.Debugf("timeouted local connection: %d ms", time.Now().UnixMilli()-localConn.timeCreated)
+				s.logger.Debugf("timeouted local connection: %d ms", now-localConn.timeCreated)
 				localConn.conn.Close()
 				continue
+			}
+
+			// The pool is normally warm. Avoid allocating a timer on this hot path.
+			select {
+			case tunnelConn := <-s.tunnelChannel:
+				if s.pairHTTPConnections(localConn, tunnelConn) {
+					continue
+				}
+			default:
 			}
 
 			timer := time.NewTimer(remaining)
@@ -524,19 +539,24 @@ func (s *HttpTransport) handleLoop() {
 					break loop
 
 				case tunnelConn := <-s.tunnelChannel:
-					timer.Stop()
-					// Send the target addr over the connection using the binary protocol
-					if err := utils.SendBinaryTransportString(tunnelConn, localConn.remoteAddr, utils.SG_TCP); err != nil {
-						s.logger.Errorf("%v", err)
-						tunnelConn.Close()
-						continue loop
+					if s.pairHTTPConnections(localConn, tunnelConn) {
+						timer.Stop()
+						break loop
 					}
-
-					// Handle data exchange between connections
-					go handlers.TCPConnectionHandler(s.ctx, false, localConn.conn, tunnelConn, s.logger, s.usageMonitor, localConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
-					break loop
 				}
 			}
 		}
 	}
+}
+
+func (s *HttpTransport) pairHTTPConnections(localConn LocalTCPConn, tunnelConn net.Conn) bool {
+	if err := utils.SendBinaryTransportString(tunnelConn, localConn.remoteAddr, utils.SG_TCP); err != nil {
+		s.logger.Errorf("%v", err)
+		tunnelConn.Close()
+		return false
+	}
+
+	port := localConn.conn.LocalAddr().(*net.TCPAddr).Port
+	go handlers.TCPConnectionHandler(s.ctx, false, localConn.conn, tunnelConn, s.logger, s.usageMonitor, port, s.config.Sniffer)
+	return true
 }
