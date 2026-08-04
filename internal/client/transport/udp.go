@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/musix/backhaul/internal/utils"
-	"github.com/musix/backhaul/internal/utils/network"
-	"github.com/musix/backhaul/internal/web"
+	"github.com/sahmadiut/backhaul/internal/utils"
+	"github.com/sahmadiut/backhaul/internal/utils/network"
+	"github.com/sahmadiut/backhaul/internal/web"
 	"github.com/sirupsen/logrus"
 )
 
