@@ -45,6 +45,12 @@ func TCPConnectionHandler(ctx context.Context, proxyProtocol bool, from net.Conn
 		}
 	}
 
+	stopCancelWatcher := context.AfterFunc(ctx, func() {
+		from.Close()
+		to.Close()
+	})
+	defer stopCancelWatcher()
+
 	go func() {
 		defer close(done)
 		transferData(from, to, logger, usage, remotePort, sniffer)

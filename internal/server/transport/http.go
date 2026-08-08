@@ -51,6 +51,40 @@ type HttpConfig struct {
 	Mode         config.TransportType // http or https
 }
 
+const (
+	maxHTTPHeaderBytes = 8 << 10
+	httpIdleTimeout    = 30 * time.Second
+)
+
+const nginxWelcomePage = `<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+    body {
+        width: 35em;
+        margin: 0 auto;
+        font-family: Tahoma, Verdana, Arial, sans-serif;
+    }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.</p>
+
+<p>For online documentation and support please refer to
+<a href="http://nginx.org/">nginx.org</a>.<br/>
+Commercial support is available at
+<a href="http://nginx.com/">nginx.com</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>
+`
+
+var nginxWelcomePageBytes = []byte(nginxWelcomePage)
+
 func NewHTTPServer(parentCtx context.Context, config *HttpConfig, logger *logrus.Logger) *HttpTransport {
 	ctx, cancel := context.WithCancel(parentCtx)
 
@@ -94,6 +128,9 @@ func (s *HttpTransport) Restart() {
 	level := s.logger.Level
 	s.logger.SetLevel(logrus.FatalLevel)
 
+	oldTunnelChannel := s.tunnelChannel
+	oldLocalChannel := s.localChannel
+
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -104,6 +141,7 @@ func (s *HttpTransport) Restart() {
 	}
 
 	time.Sleep(2 * time.Second)
+	drainHTTPConnections(oldTunnelChannel, oldLocalChannel)
 
 	ctx, cancel := context.WithCancel(s.parentctx)
 	s.ctx = ctx
@@ -123,7 +161,31 @@ func (s *HttpTransport) Restart() {
 	go s.Start()
 }
 
+func drainHTTPConnections(tunnelChannel <-chan net.Conn, localChannel <-chan LocalTCPConn) {
+	for {
+		select {
+		case conn := <-tunnelChannel:
+			conn.Close()
+		default:
+			goto drainLocal
+		}
+	}
+
+drainLocal:
+	for {
+		select {
+		case conn := <-localChannel:
+			conn.conn.Close()
+		default:
+			return
+		}
+	}
+}
+
 func (s *HttpTransport) channelHandler() {
+	ctx := s.ctx
+	controlChannel := s.controlChannel
+	reqNewConnChan := s.reqNewConnChan
 	ticker := time.NewTicker(s.config.Heartbeat)
 	defer ticker.Stop()
 
@@ -134,10 +196,10 @@ func (s *HttpTransport) channelHandler() {
 	go func() {
 		for {
 			select {
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
-				message, err := utils.ReceiveBinaryByte(s.controlChannel)
+				message, err := utils.ReceiveBinaryByte(controlChannel)
 				if err != nil {
 					if s.cancel != nil {
 						s.logger.Error("failed to read from channel connection. ", err)
@@ -145,18 +207,22 @@ func (s *HttpTransport) channelHandler() {
 					}
 					return
 				}
-				messageChan <- message
+				select {
+				case messageChan <- message:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			_ = utils.SendBinaryByte(s.controlChannel, utils.SG_Closed)
+		case <-ctx.Done():
+			_ = utils.SendBinaryByte(controlChannel, utils.SG_Closed)
 			return
-		case <-s.reqNewConnChan:
-			err := utils.SendBinaryByte(s.controlChannel, utils.SG_Chan)
+		case <-reqNewConnChan:
+			err := utils.SendBinaryByte(controlChannel, utils.SG_Chan)
 			if err != nil {
 				s.logger.Error("failed to send request new connection signal. ", err)
 				go s.Restart()
@@ -164,7 +230,7 @@ func (s *HttpTransport) channelHandler() {
 			}
 
 		case <-ticker.C:
-			err := utils.SendBinaryByte(s.controlChannel, utils.SG_HB)
+			err := utils.SendBinaryByte(controlChannel, utils.SG_HB)
 			if err != nil {
 				s.logger.Errorf("failed to send heartbeat signal. Error: %v.", err)
 				go s.Restart()
@@ -195,36 +261,47 @@ func (s *HttpTransport) channelHandler() {
 	}
 }
 
+func (s *HttpTransport) isBackhaulUpgradeRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet || r.Header.Get("Authorization") != s.expectedAuth {
+		return false
+	}
+
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "backhaul") {
+		return false
+	}
+
+	return r.URL.Path == "/channel" || r.URL.Path == "/tunnel" || strings.HasPrefix(r.URL.Path, "/tunnel/")
+}
+
+func serveNginxWelcomePage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Server", "nginx")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(nginxWelcomePageBytes)
+}
+
 func (s *HttpTransport) tunnelListener() {
 	addr := s.config.BindAddr
 
 	// Create an HTTP server that hijacks connections
 	server := &http.Server{
 		Addr:              addr,
-		IdleTimeout:       -1,
+		IdleTimeout:       httpIdleTimeout,
 		ReadHeaderTimeout: 10 * time.Second, // prevent slowloris attacks and resource leaks
+		MaxHeaderBytes:    maxHTTPHeaderBytes,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			s.logger.Tracef("received http request from %s", r.RemoteAddr)
 
-			// Validate the Authorization header using pre-computed expected value
-			if r.Header.Get("Authorization") != s.expectedAuth {
-				s.logger.Warnf("unauthorized request from %s, closing connection", r.RemoteAddr)
+			if !s.isBackhaulUpgradeRequest(r) {
+				if s.config.Mode == config.HTTPS {
+					serveNginxWelcomePage(w)
+					return
+				}
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 
-			// Check for the Upgrade: backhaul header without allocating a lowercase copy.
-			if !strings.EqualFold(r.Header.Get("Upgrade"), "backhaul") {
-				s.logger.Warnf("missing or invalid Upgrade header from %s", r.RemoteAddr)
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-
 			isTunnel := r.URL.Path == "/tunnel" || strings.HasPrefix(r.URL.Path, "/tunnel/")
-			if r.URL.Path != "/channel" && !isTunnel {
-				http.NotFound(w, r)
-				return
-			}
 
 			// Hijack the connection
 			hijacker, ok := w.(http.Hijacker)
@@ -320,10 +397,13 @@ func (s *HttpTransport) tunnelListener() {
 
 	<-s.ctx.Done()
 
-	// Gracefully shutdown the server
+	// Gracefully shutdown the server without blocking restarts indefinitely.
 	s.logger.Infof("shutting down the HTTP server on %s", addr)
-	if err := server.Shutdown(context.Background()); err != nil {
-		s.logger.Errorf("Failed to gracefully shutdown the server: %v", err)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		s.logger.Errorf("failed to gracefully shutdown the server: %v", err)
+		_ = server.Close()
 	}
 
 	if s.controlChannel != nil {
@@ -531,6 +611,7 @@ func (s *HttpTransport) handleLoop() {
 				select {
 				case <-s.ctx.Done():
 					timer.Stop()
+					localConn.conn.Close()
 					return
 
 				case <-timer.C:
