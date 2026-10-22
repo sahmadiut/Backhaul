@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/config"
+	"github.com/sahmadiut/backhaul/internal/ech"
 	"github.com/sahmadiut/backhaul/internal/utils"
 	"github.com/sahmadiut/backhaul/internal/utils/handlers"
 	"github.com/sahmadiut/backhaul/internal/utils/network"
@@ -42,6 +43,7 @@ type httpClientSession struct {
 }
 
 type HttpConfig struct {
+	ECH              *ech.Client
 	RemoteAddr       string
 	Token            string
 	SnifferLog       string
@@ -120,7 +122,7 @@ func waitHTTPRetry(ctx context.Context, delay time.Duration) bool {
 
 func (c *httpClientSession) channelDialer() {
 	for c.ctx.Err() == nil {
-		conn, err := network.HttpDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 3, 0, 0)
+		conn, err := network.HttpDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 3, 0, 0, c.config.ECH)
 		if err != nil {
 			if c.ctx.Err() != nil {
 				return
@@ -223,7 +225,7 @@ func (c *httpClientSession) tunnelDialer() {
 			atomic.AddInt32(&c.poolConnections, -1)
 		}
 	}()
-	conn, err := network.HttpDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 3, 0, 0)
+	conn, err := network.HttpDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 3, 0, 0, c.config.ECH)
 	if err != nil {
 		if c.ctx.Err() == nil {
 			c.logger.Debugf("HTTP tunnel dial failed: %v", err)

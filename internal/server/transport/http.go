@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/config"
+	"github.com/sahmadiut/backhaul/internal/ech"
 	"github.com/sahmadiut/backhaul/internal/utils"
 	"github.com/sahmadiut/backhaul/internal/utils/handlers"
 	"github.com/sahmadiut/backhaul/internal/utils/network"
@@ -51,6 +52,7 @@ func (s *httpServerSession) launch(fn func()) {
 }
 
 type HttpConfig struct {
+	ECH          *ech.Server
 	BindAddr     string
 	SnifferLog   string
 	TLSCertFile  string
@@ -327,6 +329,13 @@ func (s *httpServerSession) tunnelListener() {
 		}),
 	}
 
+	echTLS, err := s.config.ECH.TLSConfig()
+	if err != nil {
+		s.logger.Errorf("ECH setup: %v", err)
+		s.cancel()
+		return
+	}
+	server.TLSConfig = echTLS
 	// Disable HTTP/2: the Backhaul protocol needs HTTP/1.1 hijacking.
 	server.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 	serveDone := make(chan struct{})

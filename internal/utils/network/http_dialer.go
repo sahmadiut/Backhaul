@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/config"
+	"github.com/sahmadiut/backhaul/internal/ech"
 )
 
 const maxHTTPUpgradeResponseSize = 4 * 1024
@@ -54,13 +55,13 @@ var userAgents = []string{
 // performs a token-authenticated handshake, then hijacks the connection to
 // return the raw net.Conn for tunneling. The initial HTTP request looks like
 // normal HTTP traffic to firewalls/DPI.
-func HttpDialer(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType, retry int, SO_RCVBUF int, SO_SNDBUF int) (net.Conn, error) {
+func HttpDialer(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType, retry int, SO_RCVBUF int, SO_SNDBUF int, echOptions ...*ech.Client) (net.Conn, error) {
 	var err error
 	backoff := time.Second
 
 	for i := 0; i < retry; i++ {
 		var conn net.Conn
-		conn, err = attemptDialHTTP(ctx, addr, edgeIP, path, timeout, keepalive, nodelay, token, mode, SO_RCVBUF, SO_SNDBUF)
+		conn, err = attemptDialHTTP(ctx, addr, edgeIP, path, timeout, keepalive, nodelay, token, mode, SO_RCVBUF, SO_SNDBUF, echOptions...)
 		if err == nil {
 			return conn, nil
 		}
@@ -84,7 +85,7 @@ func HttpDialer(ctx context.Context, addr string, edgeIP string, path string, ti
 	return nil, err
 }
 
-func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType, SO_RCVBUF int, SO_SNDBUF int) (net.Conn, error) {
+func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType, SO_RCVBUF int, SO_SNDBUF int, echOptions ...*ech.Client) (net.Conn, error) {
 	randomUserID := rand.Int31()
 	randomUserAgent := userAgents[rand.Intn(len(userAgents))]
 
@@ -101,6 +102,17 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 		}
 	}
 
+	var tlsConfig *tls.Config
+	if len(echOptions) > 0 && echOptions[0] != nil && echOptions[0].Enabled {
+		if mode != config.HTTPS {
+			return nil, fmt.Errorf("ECH requires HTTPS")
+		}
+		var err error
+		tlsConfig, err = echOptions[0].TLSConfig(ctx, serverName)
+		if err != nil {
+			return nil, err
+		}
+	}
 	tcpConn, err := TcpDialer(ctx, dialAddr, "", timeout, keepalive, nodelay, 1, SO_RCVBUF, SO_SNDBUF, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial TCP: %w", err)
@@ -124,7 +136,10 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 	}
 
 	if mode == config.HTTPS || mode == config.HTTPSWS {
-		tlsConn := tls.Client(tcpConn, httpTLSConfig(serverName))
+		if tlsConfig == nil {
+			tlsConfig = httpTLSConfig(serverName)
+		}
+		tlsConn := tls.Client(tcpConn, tlsConfig)
 		rawConn = tlsConn
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			return closeWithError("TLS handshake failed: %w", err)

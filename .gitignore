@@ -39,3 +39,6 @@ dist/
 server.*
 backhaul
 *.log
+# Generated ECH credentials
+ech-key.json
+key.pem

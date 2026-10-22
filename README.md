@@ -707,3 +707,8 @@ Thanks for your support!
 ## Stargazers over time
 [![Stargazers over time](https://starchart.cc/sahmadiut/Backhaul.svg?variant=light)](https://starchart.cc/sahmadiut/Backhaul)
 
+
+## Optional ECH (v1.1.1)
+
+HTTPS now supports optional Encrypted Client Hello. Existing configurations remain
+unchanged. See [the simple direct and CDN setup guide](docs/ech.md).

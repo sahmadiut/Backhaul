@@ -150,6 +150,7 @@ func (c *Client) Start() {
 
 	case config.HTTP, config.HTTPS:
 		httpConfig := &transport.HttpConfig{
+			ECH:              &c.config.Client,
 			RemoteAddr:       c.config.RemoteAddr,
 			HeartbeatTimeout: time.Duration(c.config.HeartbeatTimeout) * time.Second,
 			Nodelay:          c.config.Nodelay,

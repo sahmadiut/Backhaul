@@ -1,5 +1,7 @@
 package config
 
+import "github.com/sahmadiut/backhaul/internal/ech"
+
 // TransportType defines the type of transport.
 type TransportType string
 
@@ -19,6 +21,7 @@ const (
 
 // ServerConfig represents the configuration for the server.
 type ServerConfig struct {
+	ech.Server
 	BindAddr         string        `toml:"bind_addr"`
 	Transport        TransportType `toml:"transport"`
 	Token            string        `toml:"token"`
@@ -50,6 +53,7 @@ type ServerConfig struct {
 
 // ClientConfig represents the configuration for the client.
 type ClientConfig struct {
+	ech.Client
 	RemoteAddr       string        `toml:"remote_addr"`
 	Transport        TransportType `toml:"transport"`
 	Token            string        `toml:"token"`

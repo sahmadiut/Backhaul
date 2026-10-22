@@ -151,6 +151,7 @@ func (s *Server) Start() {
 
 	case config.HTTP, config.HTTPS:
 		httpConfig := &transport.HttpConfig{
+			ECH:         &s.config.Server,
 			BindAddr:    s.config.BindAddr,
 			Nodelay:     s.config.Nodelay,
 			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,

@@ -115,37 +115,39 @@ TLS. Plaintext DNS can still reveal the hostname, and a dedicated IP can identif
 the service. ECH is a privacy feature, not a speed or recovery feature and not a
 guarantee of bypassing filtering. See [RFC 9849](https://www.rfc-editor.org/rfc/rfc9849.html).
 
-This repository does not currently enable ECH. The HTTPS dialer sets `ServerName`
-and deliberately accepts self-signed certificates (`InsecureSkipVerify: true`),
-but supplies no ECH configuration. The server loads a normal TLS certificate/key
-and supplies no ECH keys. `edge_ip` changes the connection destination; it does
-not encrypt SNI or enable ECH.
+## v1.1.1: optional ECH implementation
 
-ECH is technically compatible with this HTTPS transport because it operates
-during TLS, before the HTTP/1.1 upgrade. A proper implementation would require:
+ECH is now an opt-in feature for `transport = "https"`. See the
+[step-by-step direct and CDN setup guide](ech.md) for complete configurations.
 
-1. A supported Go toolchain with server ECH support. Client support first appeared
-   in [Go 1.23](https://go.dev/doc/go1.23); server support appeared in
-   [Go 1.24](https://go.dev/doc/go1.24). The current module and local toolchain are
-   1.23.1. Use a current supported release when implementing it, not the old
-   minimum release merely because it contains the API.
-2. TLS 1.3, ECH server key/config generation and rotation, and corresponding
-   client `EncryptedClientHelloConfigList` provisioning. A normal HTTPS
-   certificate alone is insufficient. Configuration can be provisioned directly
-   for managed clients or advertised through DNS HTTPS/SVCB records; this custom
-   dialer currently performs neither ECH discovery nor refresh.
-3. Authenticated certificates/trust for the intended domain and ECH public name,
-   verified retry configurations, and explicit rejection behavior without silently
-   falling back to exposed SNI. Go's ECH rejection verification ignores
-   `InsecureSkipVerify`; retaining the existing skip-verification setup is not a
-   complete ECH design. See the [crypto/tls configuration documentation](https://pkg.go.dev/crypto/tls#Config).
-4. If a reverse proxy or CDN terminates TLS, that endpoint must support ECH and
-   also forward Backhaul's custom `101 Upgrade: backhaul` bidirectional stream.
-   Ordinary HTTPS hosting or WebSocket support alone does not establish support
-   for this custom upgrade. A TCP passthrough proxy leaves ECH termination at
-   Backhaul itself.
+- `ech = true` enables authenticated TLS 1.3 ECH on the client; failures never
+  fall back to an exposed inner SNI. Both control and tunnel sockets use it.
+- Direct servers use generated ECH keys and a pinned certificate with a single
+  `-ech-generate` command. Existing files are never overwritten.
+- Compatible CDN deployments can discover ECH through authenticated DNS over
+  HTTPS, or use a provisioned config file. CDN support for the custom Backhaul
+  upgrade is still required; ordinary HTTPS/WebSocket proxying is insufficient.
+- Existing configurations keep their original behavior. Server ECH remains
+  compatible with non-ECH clients. ECH is rejected for unsupported transports.
+- Go 1.26.10 is now the minimum build toolchain; release CI uses Go 1.27.3.
 
-Conclusion: ECH can be added to HTTPS, but it is not available through a current
-configuration switch. It was assessed, not implemented, in this change. Before
-implementing it, establish whether TLS terminates at Backhaul or an intermediary
-and which domain, certificates, and ECH configuration distribution will be used.
+ECH hides the inner TLS name, not the destination IP, traffic shape, or outer
+name. Address resolution can still expose names unless a pinned `edge_ip` or
+an encrypted system resolver is used. Direct key/certificate rotation is manual;
+CDN discovery refreshes within one minute. No production CDN compatibility or
+Linux runtime acceptance is implied by local tests.
+## v1.1.1 validation
+
+- Real TLS tests confirm ECH acceptance, rejection without fallback, and failure
+  with an untrusted certificate. Tests also cover DoH parsing/cancellation,
+  malformed configuration, safe generation, TOML fields, and unsupported modes.
+- The HTTP recovery test now includes an ECH variant with real forwarding and
+  three server/client restart cycles, alongside unchanged HTTP and HTTPS cases.
+- Race-detector checks pass for the ECH, network, handler, and client/server
+  transport packages. Configuration and startup-validation tests pass as well.
+- Linux/amd64 `go vet ./...` and application cross-build pass with Go 1.26.10.
+- Windows runtime tests use temporary socket/listener compatibility overlays;
+  CLI/version/generation checks additionally stub the Linux-only tuning function.
+  The CLI reports v1.1.1 and generates the expected credential files. These
+  overlays are outside the repository and do not establish Linux runtime behavior.
+- No live CDN deployment, hosted release, or production rollout was performed.

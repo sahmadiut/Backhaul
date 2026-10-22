@@ -16,6 +16,7 @@ import (
 
 	"github.com/sahmadiut/backhaul/config"
 	client "github.com/sahmadiut/backhaul/internal/client/transport"
+	"github.com/sahmadiut/backhaul/internal/ech"
 	"github.com/sahmadiut/backhaul/internal/utils"
 	"github.com/sirupsen/logrus"
 )
@@ -58,8 +59,12 @@ func httpTestCertificate(t *testing.T) (string, string) {
 }
 
 func TestHTTPAndHTTPSRecoverAfterRestart(t *testing.T) {
-	for _, mode := range []config.TransportType{config.HTTP, config.HTTPS} {
-		t.Run(string(mode), func(t *testing.T) {
+	for _, variant := range []string{"http", "https", "ech"} {
+		mode := config.TransportType(variant)
+		if variant == "ech" {
+			mode = config.HTTPS
+		}
+		t.Run(variant, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			echo, err := net.Listen("tcp", "127.0.0.1:0")
@@ -85,10 +90,23 @@ func TestHTTPAndHTTPSRecoverAfterRestart(t *testing.T) {
 			if mode == config.HTTPS {
 				cfg.TLSCertFile, cfg.TLSKeyFile = httpTestCertificate(t)
 			}
+			var echClient *ech.Client
+			remoteAddr, edgeIP := tunnelAddr, ""
+			if variant == "ech" {
+				dir := filepath.Join(t.TempDir(), "ech")
+				if err := ech.Generate(dir, "tunnel.example.com", "public.example.com"); err != nil {
+					t.Fatal(err)
+				}
+				cfg.ECH = &ech.Server{Enabled: true, KeyFile: filepath.Join(dir, "ech-key.json")}
+				cfg.TLSCertFile, cfg.TLSKeyFile = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+				echClient = &ech.Client{Enabled: true, ConfigFile: filepath.Join(dir, "ech-config.txt"), CAFile: cfg.TLSCertFile}
+				_, port, _ := net.SplitHostPort(tunnelAddr)
+				remoteAddr, edgeIP = net.JoinHostPort("tunnel.example.com", port), "127.0.0.1"
+			}
 			srv := NewHTTPServer(ctx, cfg, quietHTTPLogger())
 			serverDone := make(chan struct{})
 			go func() { defer close(serverDone); srv.run() }()
-			cli := client.NewHTTPClient(ctx, &client.HttpConfig{RemoteAddr: tunnelAddr, Token: "test", Mode: mode, ConnPoolSize: 2, RetryInterval: 20 * time.Millisecond, DialTimeOut: time.Second, KeepAlive: time.Second, Nodelay: true, HeartbeatTimeout: time.Second}, quietHTTPLogger())
+			cli := client.NewHTTPClient(ctx, &client.HttpConfig{RemoteAddr: remoteAddr, EdgeIP: edgeIP, ECH: echClient, Token: "test", Mode: mode, ConnPoolSize: 2, RetryInterval: 20 * time.Millisecond, DialTimeOut: time.Second, KeepAlive: time.Second, Nodelay: true, HeartbeatTimeout: time.Second}, quietHTTPLogger())
 			cli.Start()
 			t.Cleanup(func() {
 				cancel()

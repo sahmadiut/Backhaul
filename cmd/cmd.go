@@ -81,6 +81,17 @@ func loadConfig(configPath string) (*config.Config, error) {
 	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
 		return &cfg, err
 	}
+	if cfg.Server.Enabled && cfg.Server.Transport != config.HTTPS {
+		return &cfg, fmt.Errorf("server ech requires transport = https")
+	}
+	if cfg.Client.Enabled && cfg.Client.Transport != config.HTTPS {
+		return &cfg, fmt.Errorf("client ech requires transport = https")
+	}
+	if cfg.Server.Enabled {
+		if _, err := cfg.Server.Server.TLSConfig(); err != nil {
+			return &cfg, err
+		}
+	}
 	return &cfg, nil
 }
 
@@ -98,6 +109,9 @@ func printStartupBanner(cfg *config.Config, mode string, configPath string, vers
 		logger.Infof("Mode:        server")
 		logger.Infof("Config:      %s", configPath)
 		logger.Infof("Transport:   %s", s.Transport)
+		if s.Enabled {
+			logger.Info("ECH:         enabled (legacy clients also accepted)")
+		}
 		logger.Infof("Bind Addr:   %s", s.BindAddr)
 		logger.Infof("Ports:       %s", formatPorts(s.Ports))
 		logger.Infof("Log Level:   %s", s.LogLevel)
@@ -133,6 +147,9 @@ func printStartupBanner(cfg *config.Config, mode string, configPath string, vers
 		logger.Infof("Mode:        client")
 		logger.Infof("Config:      %s", configPath)
 		logger.Infof("Transport:   %s", c.Transport)
+		if c.Enabled {
+			logger.Info("ECH:         required; certificate verification enabled; no plaintext fallback")
+		}
 		logger.Infof("Remote Addr: %s", c.RemoteAddr)
 		logger.Infof("Log Level:   %s", c.LogLevel)
 		logger.Infof("Keepalive:   %ds | Retry: %ds | Dial Timeout: %ds", c.Keepalive, c.RetryInterval, c.DialTimeout)
@@ -178,4 +195,3 @@ func formatPorts(ports []string) string {
 func isMuxTransport(t config.TransportType) bool {
 	return t == config.TCPMUX || t == config.WSMUX || t == config.WSSMUX
 }
-

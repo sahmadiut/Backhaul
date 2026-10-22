@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sahmadiut/backhaul/cmd"
+	"github.com/sahmadiut/backhaul/internal/ech"
 	"github.com/sahmadiut/backhaul/internal/utils"
 )
 
@@ -22,13 +23,23 @@ var (
 )
 
 // Define the version of the application
-const version = "v1.1.0"
+const version = "v1.1.1"
 
 func main() {
 	configPath = flag.String("c", "", "path to the configuration file (TOML format)")
 	showVersion := flag.Bool("v", false, "print the version and exit")
 
+	echDir := flag.String("ech-generate", "", "generate direct ECH credentials in a NEW directory")
+	echName := flag.String("ech-name", "", "private tunnel DNS hostname")
+	echPublic := flag.String("ech-public-name", "", "visible outer DNS hostname")
 	flag.Parse()
+	if *echDir != "" {
+		if err := ech.Generate(*echDir, *echName, *echPublic); err != nil {
+			logger.Fatal(err)
+		}
+		fmt.Println("ECH files created. Keep ech-key.json and key.pem on the server. Copy only ech-config.txt and cert.pem to the client. See docs/ech.md.")
+		return
+	}
 
 	// If the version flag is provided, print the version and exit
 	if *showVersion {
