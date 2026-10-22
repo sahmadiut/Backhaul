@@ -578,6 +578,17 @@ To start using the solution, you'll need to configure both server and client com
    * Refer to the next section for instructions on generating `tls_cert` and `tls_key`.
 
 
+### HTTP/HTTPS recovery and ECH
+
+HTTP and HTTPS now use isolated connection generations, bounded spare-pool growth,
+and heartbeat deadlines. The optional client setting `heartbeat_timeout` defaults
+to 180 seconds; keep it at least three times the server's `heartbeat` interval.
+Recovery creates fresh connections, so interrupted applications must reconnect.
+
+See the [HTTP/HTTPS review](docs/http-https-review.md) for performance measurements,
+recovery configuration, test limitations, and ECH feasibility. ECH is not currently
+implemented; changing `edge_ip` does not enable it.
+
 ## Generating a Self-Signed TLS Certificate with OpenSSL
 
 To generate a TLS certificate and key, you can use tools like OpenSSL. Here’s a step-by-step guide on how to create a self-signed certificate and key using OpenSSL:

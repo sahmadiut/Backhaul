@@ -22,8 +22,8 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// A TLS Read returns at most one 16KB plaintext record. Using a larger buffer
-// in that direction only increases per-connection memory retention.
+// TLS uses at most 16KB plaintext records. Keep both directions record-sized,
+// including HTTP connections wrapped to preserve bytes following the upgrade.
 var tlsReadBufferPool = sync.Pool{
 	New: func() interface{} {
 		buf := make([]byte, 16*1024)
@@ -58,13 +58,9 @@ func TCPConnectionHandler(ctx context.Context, proxyProtocol bool, from net.Conn
 
 	transferData(to, from, logger, usage, remotePort, sniffer)
 
-	select {
-	case <-ctx.Done():
-		from.Close()
-		to.Close()
-		return
-	case <-done:
-	}
+	// Both directions close their sockets on exit; cancellation also closes
+	// them via AfterFunc. Join the other copier before releasing the session.
+	<-done
 }
 
 // Using direct Read and Write for transferring data
@@ -77,7 +73,9 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 			if err != nil && !errors.Is(err, net.ErrClosed) {
 				logger.Trace("unable to splice connection data: ", err)
 			}
-			logger.Tracef("spliced data: %d bytes", written)
+			if logger.IsLevelEnabled(logrus.TraceLevel) {
+				logger.Tracef("spliced data: %d bytes", written)
+			}
 			from.Close()
 			to.Close()
 			return
@@ -85,7 +83,7 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 	}
 
 	pool := &bufferPool
-	if _, ok := from.(*tls.Conn); ok {
+	if isTLSConn(from) || isTLSConn(to) {
 		pool = &tlsReadBufferPool
 	}
 	bufPtr := pool.Get().(*[]byte)
@@ -94,23 +92,13 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 
 	for {
 		// Read data from the source connection
-		r, err := from.Read(buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				logger.Trace("reader stream closed or EOF received")
-			} else {
-				logger.Trace("unable to read from the connection: ", err)
-			}
-			from.Close()
-			to.Close()
-			return
-		}
+		r, readErr := from.Read(buf)
 
 		totalWritten := 0
 		for totalWritten < r {
 			// Write data to the destination connection
 			w, err := to.Write(buf[totalWritten:r])
-			if err != nil {
+			if err != nil || w == 0 {
 				if errors.Is(err, net.ErrClosed) {
 					logger.Trace("writer stream closed or EOF received")
 				} else {
@@ -124,9 +112,20 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 			totalWritten += w
 		}
 
-		logger.Tracef("read data: %d bytes, written data: %d bytes", r, totalWritten)
+		if logger.IsLevelEnabled(logrus.TraceLevel) {
+			logger.Tracef("read data: %d bytes, written data: %d bytes", r, totalWritten)
+		}
 		if sniffer {
 			usage.AddOrUpdatePort(remotePort, uint64(totalWritten))
+		}
+		// Readers may return final payload bytes and EOF together.
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, net.ErrClosed) {
+				logger.Trace("unable to read from the connection: ", readErr)
+			}
+			from.Close()
+			to.Close()
+			return
 		}
 	}
 
@@ -134,6 +133,19 @@ func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.
 
 type connectionUnwrapper interface {
 	Unwrap() net.Conn
+}
+
+func isTLSConn(conn net.Conn) bool {
+	for {
+		if _, ok := conn.(*tls.Conn); ok {
+			return true
+		}
+		unwrapper, ok := conn.(connectionUnwrapper)
+		if !ok {
+			return false
+		}
+		conn = unwrapper.Unwrap()
+	}
 }
 
 func isTCPConn(conn net.Conn) bool {

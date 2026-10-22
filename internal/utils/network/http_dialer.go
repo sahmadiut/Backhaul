@@ -107,6 +107,10 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 	}
 
 	var rawConn net.Conn = tcpConn
+	// DialContext stops watching after connect. Cancellation must also interrupt
+	// a peer stalled in the HTTP upgrade, including when timeout is disabled.
+	stopCancel := context.AfterFunc(ctx, func() { _ = tcpConn.Close() })
+	defer stopCancel()
 	closeWithError := func(format string, args ...interface{}) (net.Conn, error) {
 		_ = rawConn.Close()
 		return nil, fmt.Errorf(format, args...)
@@ -145,6 +149,10 @@ func attemptDialHTTP(ctx context.Context, addr string, edgeIP string, path strin
 	if err := upgradedConn.SetDeadline(time.Time{}); err != nil {
 		_ = upgradedConn.Close()
 		return nil, fmt.Errorf("failed to clear HTTP handshake deadline: %w", err)
+	}
+	if ctx.Err() != nil {
+		_ = upgradedConn.Close()
+		return nil, ctx.Err()
 	}
 
 	return upgradedConn, nil
@@ -263,6 +271,9 @@ func (c *prefixedConn) Read(payload []byte) (int, error) {
 	if len(c.prefix) > 0 {
 		n := copy(payload, c.prefix)
 		c.prefix = c.prefix[n:]
+		if len(c.prefix) == 0 {
+			c.prefix = nil
+		}
 		return n, nil
 	}
 	return c.Conn.Read(payload)
@@ -280,6 +291,7 @@ func (c *prefixedConn) WriteTo(dst io.Writer) (int64, error) {
 		if len(c.prefix) > 0 {
 			return written, io.ErrShortWrite
 		}
+		c.prefix = nil
 	}
 	if writerTo, ok := c.Conn.(io.WriterTo); ok {
 		n, err := writerTo.WriteTo(dst)

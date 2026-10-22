@@ -2,16 +2,56 @@ package network
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sahmadiut/backhaul/config"
 )
 
 const testUpgradeResponse = "HTTP/1.1 101 Switching Protocols\r\n" +
 	"Upgrade: backhaul\r\n" +
 	"Connection: Upgrade\r\n\r\n"
+
+func TestHTTPDialCancellationIncludesDNS(t *testing.T) {
+	previous := net.DefaultResolver
+	started := make(chan struct{})
+	var once sync.Once
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	defer func() { net.DefaultResolver = previous }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := HttpDialer(ctx, "backhaul-cancel.invalid:443", "", "/channel", 10*time.Second, time.Second, true, "test", config.HTTP, 1, 0, 0)
+		if conn != nil {
+			conn.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("DNS lookup did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled DNS dial succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DNS lookup outlived dial cancellation")
+	}
+}
 
 func TestBuildHTTPUpgradeRequest(t *testing.T) {
 	request := string(buildHTTPUpgradeRequest("example.com:443", "/tunnel", "secret", 42, "test-agent"))
@@ -29,6 +69,46 @@ func TestBuildHTTPUpgradeRequest(t *testing.T) {
 	channelRequest := string(buildHTTPUpgradeRequest("example.com:443", "/channel", "secret", 42, "test-agent"))
 	if !strings.HasPrefix(channelRequest, "GET /channel HTTP/1.1\r\n") {
 		t.Fatalf("channel path received a tunnel suffix: %q", channelRequest)
+	}
+}
+
+func TestHTTPUpgradeCancellationInterruptsStalledPeer(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := HttpDialer(ctx, listener.Addr().String(), "", "/channel", 0, time.Second, true, "test", config.HTTP, 1, 0, 0)
+		if conn != nil {
+			conn.Close()
+		}
+		done <- err
+	}()
+	select {
+	case conn := <-accepted:
+		defer conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("dial did not connect")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled upgrade succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP handshake ignored cancellation")
 	}
 }
 

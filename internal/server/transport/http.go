@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,24 +15,39 @@ import (
 	"github.com/sahmadiut/backhaul/config"
 	"github.com/sahmadiut/backhaul/internal/utils"
 	"github.com/sahmadiut/backhaul/internal/utils/handlers"
+	"github.com/sahmadiut/backhaul/internal/utils/network"
 	"github.com/sahmadiut/backhaul/internal/web"
 
 	"github.com/sirupsen/logrus"
 )
 
 type HttpTransport struct {
-	config         *HttpConfig
-	parentctx      context.Context
+	config       *HttpConfig
+	parentctx    context.Context
+	logger       *logrus.Logger
+	usageMonitor *web.Usage
+	expectedAuth string
+	startOnce    sync.Once
+	restartMutex sync.Mutex
+	cancel       context.CancelFunc
+}
+
+type httpServerSession struct {
+	*HttpTransport
 	ctx            context.Context
 	cancel         context.CancelFunc
-	logger         *logrus.Logger
 	tunnelChannel  chan net.Conn
 	localChannel   chan LocalTCPConn
 	reqNewConnChan chan struct{}
 	controlChannel net.Conn
-	restartMutex   sync.Mutex
-	usageMonitor   *web.Usage
-	expectedAuth   string // pre-computed "Bearer <token>" to avoid fmt.Sprintf per request
+	controlMutex   sync.Mutex
+	connections    network.ConnectionSet
+	workers        sync.WaitGroup
+}
+
+func (s *httpServerSession) launch(fn func()) {
+	s.workers.Add(1)
+	go func() { defer s.workers.Done(); fn() }()
 }
 
 type HttpConfig struct {
@@ -85,176 +101,104 @@ Commercial support is available at
 
 var nginxWelcomePageBytes = []byte(nginxWelcomePage)
 
-func NewHTTPServer(parentCtx context.Context, config *HttpConfig, logger *logrus.Logger) *HttpTransport {
-	ctx, cancel := context.WithCancel(parentCtx)
-
-	server := &HttpTransport{
-		config:         config,
-		parentctx:      parentCtx,
-		ctx:            ctx,
-		cancel:         cancel,
-		logger:         logger,
-		tunnelChannel:  make(chan net.Conn, config.ChannelSize),
-		localChannel:   make(chan LocalTCPConn, config.ChannelSize),
-		reqNewConnChan: make(chan struct{}, config.ChannelSize),
-		controlChannel: nil,
-		usageMonitor:   web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
-		expectedAuth:   "Bearer " + config.Token,
+func NewHTTPServer(parentCtx context.Context, cfg *HttpConfig, logger *logrus.Logger) *HttpTransport {
+	return &HttpTransport{
+		config: cfg, parentctx: parentCtx, logger: logger, expectedAuth: "Bearer " + cfg.Token,
+		usageMonitor: web.NewDataStore(fmt.Sprintf(":%v", cfg.WebPort), parentCtx, cfg.SnifferLog, cfg.Sniffer, &cfg.TunnelStatus, logger),
 	}
-
-	return server
 }
 
 func (s *HttpTransport) Start() {
-	// for webui
-	if s.config.WebPort > 0 {
-		go s.usageMonitor.Monitor()
-	}
-
-	s.config.TunnelStatus = fmt.Sprintf("Disconnected (%s)", s.config.Mode)
-
-	go s.tunnelListener()
+	s.startOnce.Do(func() {
+		if s.config.WebPort > 0 {
+			go s.usageMonitor.Monitor()
+		}
+		go s.run()
+	})
 }
 
 func (s *HttpTransport) Restart() {
-	if !s.restartMutex.TryLock() {
-		s.logger.Warn("server restart already in progress, skipping restart attempt")
-		return
-	}
+	s.restartMutex.Lock()
 	defer s.restartMutex.Unlock()
-
-	s.logger.Info("restarting server...")
-
-	level := s.logger.Level
-	s.logger.SetLevel(logrus.FatalLevel)
-
-	oldTunnelChannel := s.tunnelChannel
-	oldLocalChannel := s.localChannel
-
 	if s.cancel != nil {
 		s.cancel()
 	}
-
-	// Close control channel connection
-	if s.controlChannel != nil {
-		s.controlChannel.Close()
-	}
-
-	time.Sleep(2 * time.Second)
-	drainHTTPConnections(oldTunnelChannel, oldLocalChannel)
-
-	ctx, cancel := context.WithCancel(s.parentctx)
-	s.ctx = ctx
-	s.cancel = cancel
-
-	// Re-initialize variables
-	s.tunnelChannel = make(chan net.Conn, s.config.ChannelSize)
-	s.localChannel = make(chan LocalTCPConn, s.config.ChannelSize)
-	s.reqNewConnChan = make(chan struct{}, s.config.ChannelSize)
-	s.controlChannel = nil
-	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
-	s.config.TunnelStatus = ""
-
-	// set the log level again
-	s.logger.SetLevel(level)
-
-	go s.Start()
 }
 
-func drainHTTPConnections(tunnelChannel <-chan net.Conn, localChannel <-chan LocalTCPConn) {
-	for {
-		select {
-		case conn := <-tunnelChannel:
-			conn.Close()
-		default:
-			goto drainLocal
+func (s *HttpTransport) run() {
+	for s.parentctx.Err() == nil {
+		ctx, cancel := context.WithCancel(s.parentctx)
+		session := &httpServerSession{
+			HttpTransport: s, ctx: ctx, cancel: cancel,
+			tunnelChannel:  make(chan net.Conn, s.config.ChannelSize),
+			localChannel:   make(chan LocalTCPConn, s.config.ChannelSize),
+			reqNewConnChan: make(chan struct{}, s.config.ChannelSize),
 		}
-	}
-
-drainLocal:
-	for {
+		s.restartMutex.Lock()
+		s.cancel = cancel
+		s.restartMutex.Unlock()
+		s.usageMonitor.SetTunnelStatus(fmt.Sprintf("Disconnected (%s)", s.config.Mode))
+		stop := context.AfterFunc(ctx, session.connections.CloseAll)
+		// The listener remains a producer until Shutdown has stopped HTTP handlers.
+		session.launch(session.tunnelListener)
+		session.workers.Wait()
+		cancel()
+		session.connections.CloseAll()
+		stop()
+		s.usageMonitor.SetTunnelStatus(fmt.Sprintf("Disconnected (%s)", s.config.Mode))
+		timer := time.NewTimer(time.Second)
 		select {
-		case conn := <-localChannel:
-			conn.conn.Close()
-		default:
+		case <-s.parentctx.Done():
+			timer.Stop()
 			return
+		case <-timer.C:
 		}
 	}
 }
 
-func (s *HttpTransport) channelHandler() {
-	ctx := s.ctx
-	controlChannel := s.controlChannel
-	reqNewConnChan := s.reqNewConnChan
-	ticker := time.NewTicker(s.config.Heartbeat)
+func (s *httpServerSession) channelHandler(conn net.Conn) {
+	defer s.cancel()
+	heartbeat := s.config.Heartbeat
+	if heartbeat <= 0 {
+		heartbeat = 40 * time.Second
+	}
+	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
-
-	// Channel to receive the message or error
-	messageChan := make(chan byte, 10)
-
-	// Separate goroutine to continuously listen for messages
-	go func() {
+	messages := make(chan byte, 1)
+	s.launch(func() {
+		defer close(messages)
 		for {
-			select {
-			case <-ctx.Done():
+			// Three missed heartbeat intervals mark an unresponsive client as dead.
+			_ = conn.SetReadDeadline(time.Now().Add(3 * heartbeat))
+			message, err := utils.ReceiveBinaryByte(conn)
+			if err != nil {
 				return
-			default:
-				message, err := utils.ReceiveBinaryByte(controlChannel)
-				if err != nil {
-					if s.cancel != nil {
-						s.logger.Error("failed to read from channel connection. ", err)
-						go s.Restart()
-					}
-					return
-				}
-				select {
-				case messageChan <- message:
-				case <-ctx.Done():
-					return
-				}
+			}
+			select {
+			case messages <- message:
+			case <-s.ctx.Done():
+				return
 			}
 		}
-	}()
-
+	})
+	send := func(message byte) bool {
+		_ = conn.SetWriteDeadline(time.Now().Add(heartbeat))
+		return utils.SendBinaryByte(conn, message) == nil
+	}
 	for {
 		select {
-		case <-ctx.Done():
-			_ = utils.SendBinaryByte(controlChannel, utils.SG_Closed)
+		case <-s.ctx.Done():
 			return
-		case <-reqNewConnChan:
-			err := utils.SendBinaryByte(controlChannel, utils.SG_Chan)
-			if err != nil {
-				s.logger.Error("failed to send request new connection signal. ", err)
-				go s.Restart()
+		case <-s.reqNewConnChan:
+			if !send(utils.SG_Chan) {
 				return
 			}
-
 		case <-ticker.C:
-			err := utils.SendBinaryByte(controlChannel, utils.SG_HB)
-			if err != nil {
-				s.logger.Errorf("failed to send heartbeat signal. Error: %v.", err)
-				go s.Restart()
+			if !send(utils.SG_HB) {
 				return
 			}
-			s.logger.Debug("heartbeat signal sent successfully")
-
-		case msg, ok := <-messageChan:
-			if !ok {
-				s.logger.Error("channel closed, likely due to an error in read")
-				return
-			}
-			switch msg {
-			case utils.SG_HB:
-				s.logger.Trace("heartbeat signal received successfully")
-
-			case utils.SG_Closed:
-				s.logger.Warn("control channel has been closed by the client")
-				s.Restart()
-				return
-
-			default:
-				s.logger.Errorf("unexpected response from channel: %v", msg)
-				go s.Restart()
+		case message, ok := <-messages:
+			if !ok || message != utils.SG_HB {
 				return
 			}
 		}
@@ -280,7 +224,7 @@ func serveNginxWelcomePage(w http.ResponseWriter) {
 	_, _ = w.Write(nginxWelcomePageBytes)
 }
 
-func (s *HttpTransport) tunnelListener() {
+func (s *httpServerSession) tunnelListener() {
 	addr := s.config.BindAddr
 
 	// Create an HTTP server that hijacks connections
@@ -290,6 +234,8 @@ func (s *HttpTransport) tunnelListener() {
 		ReadHeaderTimeout: 10 * time.Second, // prevent slowloris attacks and resource leaks
 		MaxHeaderBytes:    maxHTTPHeaderBytes,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.workers.Add(1)
+			defer s.workers.Done()
 			s.logger.Tracef("received http request from %s", r.RemoteAddr)
 
 			if !s.isBackhaulUpgradeRequest(r) {
@@ -317,6 +263,11 @@ func (s *HttpTransport) tunnelListener() {
 				return
 			}
 
+			if !s.connections.Add(conn) {
+				return
+			}
+			// Bound writes to peers that stop reading during the upgrade.
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			// Send 101 Switching Protocols response
 			const response = "HTTP/1.1 101 Switching Protocols\r\n" +
 				"Upgrade: backhaul\r\n" +
@@ -324,24 +275,27 @@ func (s *HttpTransport) tunnelListener() {
 				"\r\n"
 			if _, err := bufrw.WriteString(response); err != nil {
 				s.logger.Errorf("failed to send 101 response to %s: %v", r.RemoteAddr, err)
-				conn.Close()
+				s.connections.Close(conn)
 				return
 			}
 			if err := bufrw.Flush(); err != nil {
 				s.logger.Errorf("failed to flush response to %s: %v", r.RemoteAddr, err)
-				conn.Close()
+				s.connections.Close(conn)
 				return
 			}
 
+			_ = conn.SetDeadline(time.Time{})
 			if r.URL.Path == "/channel" {
+				s.controlMutex.Lock()
 				if s.controlChannel != nil {
 					s.logger.Warn("new control channel requested.")
-					s.controlChannel.Close()
-					conn.Close()
-					go s.Restart()
+					s.controlMutex.Unlock()
+					s.connections.Close(conn)
+					s.cancel()
 					return
 				}
 				s.controlChannel = conn
+				s.controlMutex.Unlock()
 
 				s.logger.Info("control channel established successfully")
 
@@ -350,16 +304,16 @@ func (s *HttpTransport) tunnelListener() {
 					numCPU = 4 // Max allowed handler is 4
 				}
 
-				go s.channelHandler()
-				go s.parsePortMappings()
+				s.launch(func() { s.channelHandler(conn) })
+				s.launch(s.parsePortMappings)
 
 				s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
 				for i := 0; i < numCPU; i++ {
-					go s.handleLoop()
+					s.launch(s.handleLoop)
 				}
 
-				s.config.TunnelStatus = fmt.Sprintf("Connected (%s)", s.config.Mode)
+				s.usageMonitor.SetTunnelStatus(fmt.Sprintf("Connected (%s)", s.config.Mode))
 
 			} else if isTunnel {
 				select {
@@ -367,52 +321,42 @@ func (s *HttpTransport) tunnelListener() {
 					s.logger.Debugf("http tunnel connection accepted from %s", conn.RemoteAddr().String())
 				default:
 					s.logger.Warnf("http tunnel channel is full, closing connection from %s", conn.RemoteAddr().String())
-					conn.Close()
+					s.connections.Close(conn)
 				}
 			}
 		}),
 	}
 
-	if s.config.Mode == config.HTTP {
-		go func() {
-			s.logger.Infof("http server starting, listening on %s", addr)
-			if s.controlChannel == nil {
-				s.logger.Info("waiting for http control channel connection")
-			}
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				s.logger.Fatalf("failed to listen on %s: %v", addr, err)
-			}
-		}()
-	} else {
-		go func() {
-			s.logger.Infof("https server starting, listening on %s", addr)
-			if s.controlChannel == nil {
-				s.logger.Info("waiting for https control channel connection")
-			}
-			if err := server.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile); err != nil && err != http.ErrServerClosed {
-				s.logger.Fatalf("failed to listen on %s: %v", addr, err)
-			}
-		}()
-	}
-
+	// Disable HTTP/2: the Backhaul protocol needs HTTP/1.1 hijacking.
+	server.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		var err error
+		if s.config.Mode == config.HTTP {
+			err = server.ListenAndServe()
+		} else {
+			err = server.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile)
+		}
+		if err != nil && err != http.ErrServerClosed {
+			s.logger.Errorf("HTTP listener failed on %s: %v", addr, err)
+			s.cancel()
+		}
+	}()
 	<-s.ctx.Done()
-
-	// Gracefully shutdown the server without blocking restarts indefinitely.
-	s.logger.Infof("shutting down the HTTP server on %s", addr)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		s.logger.Errorf("failed to gracefully shutdown the server: %v", err)
 		_ = server.Close()
 	}
-
-	if s.controlChannel != nil {
-		s.controlChannel.Close()
-	}
+	<-serveDone
 }
 
-func (s *HttpTransport) parsePortMappings() {
+func (s *httpServerSession) parsePortMappings() {
 	for _, portMapping := range s.config.Ports {
+		if s.ctx.Err() != nil {
+			return
+		}
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
@@ -442,8 +386,12 @@ func (s *HttpTransport) parsePortMappings() {
 
 				// Create listeners for all ports in the range
 				for port := startPort; port <= endPort; port++ {
+					if s.ctx.Err() != nil {
+						return
+					}
 					localAddr = fmt.Sprintf(":%d", port)
-					go s.localListener(localAddr, strconv.Itoa(port))
+					addr, remote := localAddr, strconv.Itoa(port)
+					s.launch(func() { s.localListener(addr, remote) })
 					time.Sleep(1 * time.Millisecond) // for wide port ranges
 				}
 				continue
@@ -480,8 +428,12 @@ func (s *HttpTransport) parsePortMappings() {
 
 				// Create listeners for all ports in the range
 				for port := startPort; port <= endPort; port++ {
+					if s.ctx.Err() != nil {
+						return
+					}
 					localAddr = fmt.Sprintf(":%d", port)
-					go s.localListener(localAddr, remoteAddr)
+					addr, remote := localAddr, remoteAddr
+					s.launch(func() { s.localListener(addr, remote) })
 					time.Sleep(1 * time.Millisecond) // for wide port ranges
 				}
 				continue
@@ -498,14 +450,16 @@ func (s *HttpTransport) parsePortMappings() {
 			s.logger.Fatalf("invalid port mapping format: %s", portMapping)
 		}
 		// Start listeners for single port
-		go s.localListener(localAddr, remoteAddr)
+		addr, remote := localAddr, remoteAddr
+		s.launch(func() { s.localListener(addr, remote) })
 	}
 }
 
-func (s *HttpTransport) localListener(localAddr string, remoteAddr string) {
+func (s *httpServerSession) localListener(localAddr string, remoteAddr string) {
 	portListener, err := net.Listen("tcp", localAddr)
 	if err != nil {
-		s.logger.Fatalf("failed to start listener on %s: %v", localAddr, err)
+		s.logger.Errorf("failed to start listener on %s: %v", localAddr, err)
+		s.cancel()
 		return
 	}
 
@@ -514,12 +468,12 @@ func (s *HttpTransport) localListener(localAddr string, remoteAddr string) {
 
 	s.logger.Infof("listener started successfully, listening on address: %s", portListener.Addr().String())
 
-	go s.acceptLocalConn(portListener, remoteAddr)
-
-	<-s.ctx.Done()
+	stop := context.AfterFunc(s.ctx, func() { portListener.Close() })
+	defer stop()
+	s.acceptLocalConn(portListener, remoteAddr)
 }
 
-func (s *HttpTransport) acceptLocalConn(listener net.Listener, remoteAddr string) {
+func (s *httpServerSession) acceptLocalConn(listener net.Listener, remoteAddr string) {
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -529,15 +483,21 @@ func (s *HttpTransport) acceptLocalConn(listener net.Listener, remoteAddr string
 			s.logger.Debugf("waiting to accept incoming connection on %s", listener.Addr().String())
 			conn, err := listener.Accept()
 			if err != nil {
-				s.logger.Debugf("failed to accept connection on %s: %v", listener.Addr().String(), err)
-				continue
+				if s.ctx.Err() == nil {
+					s.logger.Debugf("local accept failed: %v", err)
+					s.cancel()
+				}
+				return
 			}
 
+			if !s.connections.Add(conn) {
+				return
+			}
 			// discard any non-tcp connection
 			tcpConn, ok := conn.(*net.TCPConn)
 			if !ok {
 				s.logger.Warnf("disarded non-TCP connection from %s", conn.RemoteAddr().String())
-				conn.Close()
+				s.connections.Close(conn)
 				continue
 			}
 
@@ -575,13 +535,13 @@ func (s *HttpTransport) acceptLocalConn(listener net.Listener, remoteAddr string
 
 			default: // channel is full, discard the connection
 				s.logger.Warnf("channel with listener %s is full, discarding TCP connection from %s", listener.Addr().String(), tcpConn.LocalAddr().String())
-				conn.Close()
+				s.connections.Close(conn)
 			}
 		}
 	}
 }
 
-func (s *HttpTransport) handleLoop() {
+func (s *httpServerSession) handleLoop() {
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -592,7 +552,7 @@ func (s *HttpTransport) handleLoop() {
 			remaining := 3*time.Second - elapsed
 			if remaining <= 0 {
 				s.logger.Debugf("timeouted local connection: %d ms", now-localConn.timeCreated)
-				localConn.conn.Close()
+				s.connections.Close(localConn.conn)
 				continue
 			}
 
@@ -605,18 +565,24 @@ func (s *HttpTransport) handleLoop() {
 			default:
 			}
 
+			// A failed assignment write may have consumed the pairing budget.
+			remaining = time.Until(time.UnixMilli(localConn.timeCreated).Add(3 * time.Second))
+			if remaining <= 0 {
+				s.connections.Close(localConn.conn)
+				continue
+			}
 			timer := time.NewTimer(remaining)
 		loop:
 			for {
 				select {
 				case <-s.ctx.Done():
 					timer.Stop()
-					localConn.conn.Close()
+					s.connections.Close(localConn.conn)
 					return
 
 				case <-timer.C:
 					s.logger.Debugf("timeouted local connection: %d ms", time.Now().UnixMilli()-localConn.timeCreated)
-					localConn.conn.Close()
+					s.connections.Close(localConn.conn)
 					break loop
 
 				case tunnelConn := <-s.tunnelChannel:
@@ -630,14 +596,25 @@ func (s *HttpTransport) handleLoop() {
 	}
 }
 
-func (s *HttpTransport) pairHTTPConnections(localConn LocalTCPConn, tunnelConn net.Conn) bool {
+func (s *httpServerSession) pairHTTPConnections(localConn LocalTCPConn, tunnelConn net.Conn) bool {
+	deadline := time.UnixMilli(localConn.timeCreated).Add(3 * time.Second)
+	if s.ctx.Err() != nil || !time.Now().Before(deadline) {
+		s.connections.Close(tunnelConn)
+		return false
+	}
+	_ = tunnelConn.SetWriteDeadline(deadline)
 	if err := utils.SendBinaryTransportString(tunnelConn, localConn.remoteAddr, utils.SG_TCP); err != nil {
 		s.logger.Errorf("%v", err)
-		tunnelConn.Close()
+		s.connections.Close(tunnelConn)
 		return false
 	}
 
+	_ = tunnelConn.SetWriteDeadline(time.Time{})
 	port := localConn.conn.LocalAddr().(*net.TCPAddr).Port
-	go handlers.TCPConnectionHandler(s.ctx, false, localConn.conn, tunnelConn, s.logger, s.usageMonitor, port, s.config.Sniffer)
+	s.launch(func() {
+		defer s.connections.Close(localConn.conn)
+		defer s.connections.Close(tunnelConn)
+		handlers.TCPConnectionHandler(s.ctx, false, localConn.conn, tunnelConn, s.logger, s.usageMonitor, port, s.config.Sniffer)
+	})
 	return true
 }

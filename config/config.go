@@ -4,13 +4,13 @@ package config
 type TransportType string
 
 const (
-	TCP    TransportType = "tcp"
-	TCPMUX TransportType = "tcpmux"
-	WS     TransportType = "ws"
-	WSS    TransportType = "wss"
-	WSMUX  TransportType = "wsmux"
-	WSSMUX TransportType = "wssmux"
-	UDP    TransportType = "udp"
+	TCP     TransportType = "tcp"
+	TCPMUX  TransportType = "tcpmux"
+	WS      TransportType = "ws"
+	WSS     TransportType = "wss"
+	WSMUX   TransportType = "wsmux"
+	WSSMUX  TransportType = "wssmux"
+	UDP     TransportType = "udp"
 	HTTP    TransportType = "http"
 	HTTPS   TransportType = "https"
 	HTTPWS  TransportType = "httpws"
@@ -55,6 +55,7 @@ type ClientConfig struct {
 	Token            string        `toml:"token"`
 	ConnectionPool   int           `toml:"connection_pool"`
 	RetryInterval    int           `toml:"retry_interval"`
+	HeartbeatTimeout int           `toml:"heartbeat_timeout"` // HTTP(S) control inactivity timeout, seconds
 	Nodelay          bool          `toml:"nodelay"`
 	Keepalive        int           `toml:"keepalive_period"`
 	LogLevel         string        `toml:"log_level"`

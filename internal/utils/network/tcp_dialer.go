@@ -49,14 +49,9 @@ func attemptTcpDialer(
 	mss int,
 ) (*net.TCPConn, error) {
 
-	//Resolve the address to a TCP address
-	tcpAddr, err := net.ResolveTCPAddr("tcp", remoteAddress)
-	if err != nil {
-		return nil, fmt.Errorf("DNS resolution: %v", err)
-	}
-
 	var localTCPAddr *net.TCPAddr
 	if localSrc != "" {
+		var err error
 		localTCPAddr, err = net.ResolveTCPAddr("tcp", localSrc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve local address: %v", err)
@@ -108,7 +103,9 @@ func attemptTcpDialer(
 	}
 
 	// Dial the TCP connection with a timeout
-	conn, err := dialer.DialContext(ctx, "tcp", tcpAddr.String())
+	// Let DialContext resolve the host so cancellation and the dial timeout
+	// cover DNS too, and the dialer can try alternate IPv4/IPv6 addresses.
+	conn, err := dialer.DialContext(ctx, "tcp", remoteAddress)
 	if err != nil {
 		return nil, err
 	}

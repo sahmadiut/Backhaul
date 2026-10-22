@@ -6,7 +6,6 @@ builds:
     main: ./main.go 
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64

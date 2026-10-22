@@ -32,6 +32,20 @@ type Usage struct {
 	mu           sync.Mutex
 	totalTraffic uint64
 	tunnelStatus *string
+	statusMu     sync.RWMutex
+}
+
+// SetTunnelStatus synchronizes HTTP transport status changes with /stats reads.
+func (m *Usage) SetTunnelStatus(status string) {
+	m.statusMu.Lock()
+	*m.tunnelStatus = status
+	m.statusMu.Unlock()
+}
+
+func (m *Usage) getTunnelStatus() string {
+	m.statusMu.RLock()
+	defer m.statusMu.RUnlock()
+	return *m.tunnelStatus
 }
 
 type PortUsage struct {
@@ -404,7 +418,7 @@ func (m *Usage) getSystemStats() (*SystemStats, error) {
 	downloadSpeed := float64(finalStats.BytesRecv - initialStats.BytesRecv)
 
 	stats := &SystemStats{
-		TunnelStatus:    *m.tunnelStatus,
+		TunnelStatus:    m.getTunnelStatus(),
 		CPUUsage:        m.formatFloat(cpuPercent[0]),
 		RAMUsage:        m.convertBytesToReadable(memStats.Used),
 		DiskUsage:       m.convertBytesToReadable(diskStats.Used),
